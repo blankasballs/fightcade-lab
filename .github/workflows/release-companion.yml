@@ -1,0 +1,90 @@
+name: Release Windows Companion
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      enable_signpath:
+        description: "Submit installer to SignPath Foundation OSS signing (requires SIGNPATH_* secrets)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-companion:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Fightcade Lab
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install runtime & Nuitka build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" nuitka ordered-set zstandard
+
+      - name: Run unit test suite (including Track 1–3 safety & exclusion checks)
+        run: |
+          pytest tests/test_track1_hardening.py tests/test_share_export.py tests/test_track3_companion.py -v
+
+      - name: Build standalone Windows Companion (Nuitka, zero bundled FBNeo/FFmpeg)
+        run: |
+          python packaging/build_companion.py --output-dir dist/companion
+
+      - name: Build zero-UAC per-user Windows installer (Inno Setup)
+        run: |
+          iscc packaging/fightcade_lab.iss
+
+      - name: Generate SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/release | Out-Null
+          Copy-Item dist/installer/FightcadeLabSetup-*.exe dist/release/
+          Copy-Item LICENSE dist/release/LICENSE.txt
+          Copy-Item THIRD_PARTY_NOTICES.md dist/release/THIRD_PARTY_NOTICES.md
+          $lines = Get-ChildItem dist/release -File | Sort-Object Name | ForEach-Object {
+            $h = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()
+            "$h  $($_.Name)"
+          }
+          $lines -join "`n" | Set-Content -Encoding ascii dist/release/SHA256SUMS.txt
+
+      - name: Submit to SignPath Foundation OSS Code Signing (when configured)
+        if: ${{ (github.event_name == 'push' || inputs.enable_signpath) && env.SIGNPATH_API_TOKEN != '' }}
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+        uses: SignPath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: fightcade-lab
+          signing-policy-slug: release-signing
+          github-artifact-id: companion-unsigned
+          wait-for-completion: true
+          output-artifact-directory: dist/signed
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fightcade-lab-companion-win64
+          path: dist/release/*
+
+      - name: Publish GitHub Release on version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/release/*
+          body: |
+            ## Fightcade Lab Windows Companion
+
+            - **License:** `AGPL-3.0-or-later` (see `LICENSE.txt` and `THIRD_PARTY_NOTICES.md`).
+            - **Zero bundled ROMs or external binaries:** Uses your own local Fightcade install & ROMs; optional `fcadefbneo_fast.exe` and `ffmpeg.exe` are fetched only with explicit user consent and SHA-256 verification.
+            - **Checksums:** Verify against `SHA256SUMS.txt` (and check VirusTotal report on the release installer).

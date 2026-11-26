@@ -1,0 +1,30 @@
+[project]
+name = "fightcade-analysis"
+version = "0.1.0"
+description = "Fightcade / fcadefbneo replay telemetry ingestion, motif indexing, regret coaching, and Replay Takeover"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyarrow>=16.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+indexing = [
+    "ruptures>=1.1",
+    "faiss-cpu>=1.8",
+    "scikit-learn>=1.4",
+    "matplotlib>=3.9",
+    "imageio-ffmpeg>=0.5",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

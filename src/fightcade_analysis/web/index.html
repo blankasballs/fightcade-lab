@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<meta id="metaThemeColor" name="theme-color" content="#0b0f19" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<title>Fightcade Lab — Replay Review</title>
+<script>
+  window.__FC_BOOTSTRAP__ = __FC_BOOTSTRAP_JSON__;
+  (function() {
+    try {
+      var t = localStorage.getItem("fc_theme");
+      if (!t && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) t = "light";
+      if (t === "light") {
+        document.documentElement.setAttribute("data-theme", "light");
+        var m = document.getElementById("metaThemeColor");
+        if (m) m.setAttribute("content", "#f1f5f9");
+      }
+    } catch (_) {}
+  })();
+</script>
+<link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <!-- GLOBAL STICKY TOP NAVIGATION BAR -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <a href="#home" class="brand" onclick="event.preventDefault(); navigateTo('home');">
+        <span id="statusDot" class="dot"></span>
+        <span>Fightcade Lab</span>
+      </a>
+      <span id="modeBadge" class="mode-badge">3S · Local</span>
+      <div id="studioBreadcrumb" class="studio-crumb hidden">
+        <span class="crumb-sep"></span>
+        <button id="btnBack" class="sm crumb-back" onclick="goBackFromStudio()">← Matches</button>
+        <span id="crumbMatchup" class="crumb-matchup"></span>
+      </div>
+    </div>
+
+    <nav id="navTabs" class="nav-seg" aria-label="Primary navigation">
+      <button id="navHome" class="nav-tab active" data-tab="home" onclick="navigateTo('home')">Home</button>
+      <button id="navMatches" class="nav-tab" data-tab="matches" onclick="navigateTo('matches')">Matches</button>
+      <button id="navNotes" class="nav-tab" data-tab="notes" onclick="navigateTo('notes')">
+        Notes <span id="navNotesBadge" class="nav-cnt hidden">0</span>
+      </button>
+      <button id="navInsights" class="nav-tab pro-gated" data-tab="insights" aria-disabled="true" title="On the roadmap" onclick="navigateTo('insights')">Insights</button>
+    </nav>
+
+    <div class="topbar-right">
+      <div id="authControls" class="hidden"></div>
+      <div class="status-wrap">
+        <button id="btnStatusPill" class="status-pill" onclick="toggleStatusPopover()" title="Companion status &amp; background jobs">
+          <span id="statusPillDot" class="dot"></span>
+          <span id="statusPillText">Watching Fightcade</span>
+        </button>
+        <div id="statusPopover" class="status-popover hidden" role="dialog" aria-label="Companion Status"></div>
+      </div>
+      <button id="btnThemeToggle" class="theme-btn" onclick="toggleTheme()" title="Switch light / dark theme">☀️</button>
+    </div>
+  </header>
+
+  <!-- ACTIVE BACKGROUND JOB STRIP -->
+  <div id="jobBanner" class="job-banner">
+    <span id="jobBannerText">Processing...</span>
+    <span id="jobBannerPct" style="font-weight:700;"></span>
+  </div>
+
+  <!-- MAIN APPLICATION SHELL -->
+  <main id="appMain" class="wrap">
+
+    <!-- VIEW 1: HOME WORKBENCH (#home) -->
+    <section id="viewHome" class="view-section">
+      <div id="homeContent">
+        <div class="card empty-card">Loading Fightcade Lab Workbench...</div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: FULL MATCH HISTORY CATALOG (#matches) -->
+    <section id="viewMatches" class="view-section hidden">
+      <div class="card">
+        <div class="row" style="margin-bottom:8px;">
+          <input id="usernameInput" class="input" style="flex:1;" placeholder="Fightcade username" onkeydown="if(event.key==='Enter'){event.preventDefault();refreshFromFightcade(false);}" />
+          <button id="btnResetUser" class="ghost sm hidden" onclick="resetToDefaultUser()" title="Return to your default Fightcade handle">Me</button>
+          <button id="btnRefresh" class="primary sm" onclick="refreshFromFightcade(false)">Refresh</button>
+          <button class="sm" onclick="toggleAddPanel()">+ Add ID</button>
+        </div>
+        <div id="addPanel" class="hidden" style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
+          <div class="row">
+            <input id="manualQuarkInput" class="input" style="flex:1;" placeholder="Quark ID or replay.fightcade.com URL" />
+            <select id="manualPersp" class="input" style="width:74px;">
+              <option value="1">P1</option>
+              <option value="2">P2</option>
+            </select>
+            <button class="emerald sm" onclick="processManualQuark()">Process</button>
+          </div>
+        </div>
+        <div class="chips" id="filterChips">
+          <button class="chip active" data-filter="all" onclick="setFilter('all')">All <span id="cntAll"></span></button>
+          <button class="chip" data-filter="ready" onclick="setFilter('ready')">Ready <span id="cntReady"></span></button>
+          <button class="chip" data-filter="unprocessed" onclick="setFilter('unprocessed')">Unprocessed <span id="cntUnproc"></span></button>
+          <button class="chip" data-filter="notes" onclick="setFilter('notes')">Has Notes <span id="cntNotes"></span></button>
+        </div>
+        <div id="charFilterRow" class="row hidden" style="margin:6px 0 4px;">
+          <select id="selfCharFilter" class="input" style="padding:6px 10px; font-size:13px;" onchange="onCharFilterChange()">
+            <option value="">You: Any</option>
+          </select>
+          <span style="font-size:12px; color:var(--muted); font-weight:700;">vs</span>
+          <select id="oppCharFilter" class="input" style="padding:6px 10px; font-size:13px;" onchange="onCharFilterChange()">
+            <option value="">Opp: Any</option>
+          </select>
+          <button id="btnClearCharFilter" class="ghost sm hidden" style="padding:4px 8px;" onclick="clearCharFilters()">Clear</button>
+        </div>
+        <div class="row-between" style="font-size:12px; color:var(--muted); margin-top:2px;">
+          <span id="lastRefreshedText">Loading match history...</span>
+          <button class="ghost sm" style="padding:3px 6px;" onclick="refreshFromFightcade(true)">Load Older ↓</button>
+        </div>
+      </div>
+      <div id="matchList"></div>
+    </section>
+
+    <!-- VIEW 3: NOTES & PLAYLISTS (#notes & #playlists) -->
+    <section id="viewNotes" class="view-section hidden">
+      <div class="row-between" style="margin-bottom:12px;">
+        <div class="nav-seg" id="notesSubTabs">
+          <button id="subTabNotebook" class="nav-tab active" onclick="setNotesSubView('notebook')">Notebook</button>
+          <button id="subTabPlaylists" class="nav-tab" onclick="setNotesSubView('playlists')">Playlists <span id="navPlaylistsBadge" class="nav-cnt hidden">0</span></button>
+        </div>
+        <button id="btnNewPlaylistFromSub" class="primary sm hidden" onclick="openPlaylistModal()">+ New Playlist</button>
+      </div>
+
+      <!-- SUB-VIEW 3A: CENTRALIZED MATCHUP NOTEBOOK -->
+      <div id="notesSubNotebook">
+        <div class="card">
+          <div class="row" style="margin-bottom:8px;">
+            <input id="notesSearchInput" class="input" style="flex:1; min-width:190px;" placeholder="Search notes, tags, opponent, character..." oninput="onNotesFilterChanged()" />
+            <select id="notesGroupBy" class="input" style="padding:8px 10px; font-size:13.5px;" onchange="onNotesFilterChanged()">
+              <option value="recent">Group: Recent</option>
+              <option value="matchup">Group: By Matchup</option>
+              <option value="tag">Group: By Tag</option>
+              <option value="set">Group: By Set</option>
+            </select>
+            <button class="sm" onclick="loadHubNotes(true)" title="Refresh notes">↻</button>
+          </div>
+
+          <div class="chips" id="notesFilterChips">
+            <button class="chip active" data-nfilter="all" onclick="setNotesFilter('all')">All <span id="nCntAll"></span></button>
+            <button class="chip" data-nfilter="moment" onclick="setNotesFilter('moment')">Moments <span id="nCntMoment"></span></button>
+            <button class="chip" data-nfilter="select_mark" onclick="setNotesFilter('select_mark')">Select Marks <span id="nCntSelect"></span></button>
+            <button class="chip" data-nfilter="set_note" onclick="setNotesFilter('set_note')">Set Takeaways <span id="nCntSet"></span></button>
+            <button class="chip" data-nfilter="mistake" onclick="setNotesFilter('mistake')">Mistakes <span id="nCntMistake"></span></button>
+            <button class="chip" data-nfilter="question" onclick="setNotesFilter('question')">Questions <span id="nCntQuestion"></span></button>
+            <button class="chip" data-nfilter="opp_habit" onclick="setNotesFilter('opp_habit')">Opp Habits <span id="nCntOppHabit"></span></button>
+            <button class="chip" data-nfilter="good_play" onclick="setNotesFilter('good_play')">Good Plays <span id="nCntGoodPlay"></span></button>
+          </div>
+
+          <div class="row" style="margin-top:6px;">
+            <select id="notesSelfChar" class="input" style="padding:6px 10px; font-size:13px;" onchange="onNotesFilterChanged()">
+              <option value="">You: Any</option>
+            </select>
+            <span style="font-size:12px; color:var(--muted); font-weight:700;">vs</span>
+            <select id="notesOppChar" class="input" style="padding:6px 10px; font-size:13px;" onchange="onNotesFilterChanged()">
+              <option value="">Opp: Any</option>
+            </select>
+            <select id="notesGoalFilter" class="input hidden" style="padding:6px 10px; font-size:13px;" onchange="onNotesFilterChanged()">
+              <option value="">Goal: Any</option>
+            </select>
+            <button id="btnNotesDrillOnly" class="sm" onclick="toggleNotesQuickFlag('drill')">⚡ Has Drill</button>
+            <button id="btnNotesNeedsNote" class="sm" onclick="toggleNotesQuickFlag('needs_note')">✏️ Needs Note</button>
+            <button id="btnClearNotesFilters" class="ghost sm hidden" style="padding:4px 8px;" onclick="clearNotesFilters()">Clear</button>
+          </div>
+
+          <div id="notesTagCloud" class="tag-cloud"></div>
+
+          <div class="row-between" style="font-size:12px; color:var(--muted); margin-top:8px;">
+            <span id="notesSummaryText">Loading notes...</span>
+          </div>
+        </div>
+
+        <div id="notesHubList"></div>
+      </div>
+
+      <!-- SUB-VIEW 3B: PLAYLISTS MANAGER -->
+      <div id="notesSubPlaylists" class="hidden">
+        <div id="playlistsManagerHost"></div>
+      </div>
+    </section>
+
+    <!-- VIEW 4: INSIGHTS & AI CHECKUPS (#insights) -->
+    <section id="viewInsights" class="view-section hidden">
+      <div id="insightsContent">
+        <div class="card empty-card">Loading Insights...</div>
+      </div>
+    </section>
+
+    <!-- VIEW 4B: NATIVE REPORT VIEWER (#report/<id>) -->
+    <section id="viewReport" class="view-section hidden">
+      <div id="reportViewerContent">
+        <div class="card empty-card">Loading Report...</div>
+      </div>
+    </section>
+
+    <!-- VIEW 5: 2-COLUMN DESKTOP REPLAY STUDIO (#replay/<qid>) -->
+    <section id="viewStudio" class="view-section hidden">
+      <div class="studio-grid">
+        <!-- LEFT COLUMN: STAGE + TIMELINE + TRANSPORT -->
+        <div class="studio-left">
+          <!-- Compact Single-Row Match & Round Switcher Bar -->
+          <div class="switcher-bar">
+            <div class="switcher-group">
+              <span class="switcher-lbl">MATCH</span>
+              <div id="matchTabs" class="chips switcher-chips"></div>
+            </div>
+            <span class="switcher-div"></span>
+            <div class="switcher-group">
+              <span class="switcher-lbl" id="roundsNavLabel">ROUND</span>
+              <div id="roundTabs" class="chips switcher-chips"></div>
+            </div>
+            <div class="switcher-actions">
+              <button id="btnFlipSide" class="sm" onclick="flipViewerPerspective()" title="Switch viewer perspective between P1 and P2">⇄ Flip P1/P2</button>
+              <button id="btnExportShare" class="sm" onclick="exportCurrentStudioClipBundle()" title="Export 4:3 clip.mp4 + overlay.json.gz + hitbox thumb.jpg for sharing">↗ Share Clip</button>
+              <button id="btnShareLink" class="sm" onclick="copyStudioDeepLink()" title="Copy deep-link to exact round and frame">🔗 Link</button>
+            </div>
+          </div>
+
+          <!-- 4:3 Video Stage + Unified Overlay/HUD/Speed Strip -->
+          <div class="video-shell">
+            <div class="video-stage">
+              <video id="roundVideo" playsinline webkit-playsinline preload="metadata" muted></video>
+              <canvas id="overlayCanvas" width="768" height="576"></canvas>
+            </div>
+            <div class="studio-video-bar" id="overlayBar">
+              <div class="row" style="gap:5px;">
+                <span class="bar-lbl">OVERLAYS</span>
+                <button class="ov-btn" data-ov="hitboxes" onclick="toggleOverlayOpt('hitboxes')">Hitboxes</button>
+                <button class="ov-btn" data-ov="inputs" onclick="toggleOverlayOpt('inputs')">Inputs</button>
+                <button class="ov-btn" data-ov="sticks" onclick="toggleOverlayOpt('sticks')">Sticks</button>
+                <button class="ov-btn" data-ov="gauges" onclick="toggleOverlayOpt('gauges')">Gauges</button>
+                <button id="btnGenOverlays" class="sm primary hidden" style="padding:3px 9px; font-size:11.5px;" onclick="generateSetOverlays()">+ Generate Overlays</button>
+                <span id="ovStatusText" style="font-size:11px; color:var(--muted);"></span>
+              </div>
+              <span id="frameHud" class="frame-hud">R1 · 0.00s · gf0</span>
+              <div class="speed-group">
+                <button class="speed-btn" data-rate="0.25" onclick="setRate(0.25)">0.25x</button>
+                <button class="speed-btn" data-rate="0.5" onclick="setRate(0.5)">0.5x</button>
+                <button class="speed-btn active" data-rate="1" onclick="setRate(1)">1.0x</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Non-blocking optional Grouflon setup guide (only shown when Grouflon is absent locally) -->
+          <div id="grouflonBanner" class="info-banner hidden">
+            <div style="min-width:0; flex:1;">
+              <strong>Hitbox Overlays &amp; Sandbox Training are optional:</strong>
+              <span>Replay Review, Inputs, HP timeline, Notes &amp; Takeover work normally. To enable Hitboxes &amp; Sandbox (Alt+5), place <code>3rd_training_lua-master</code> in <code id="grouflonTargetDir">your Fightcade fbneo folder</code>.</span>
+            </div>
+            <div class="row" style="gap:6px; flex-wrap:nowrap;">
+              <button type="button" class="sm" onclick="copyGrouflonInstallDir()">Copy Folder</button>
+              <button type="button" class="sm ghost" onclick="dismissGrouflonBanner()" title="Dismiss guide">✕</button>
+            </div>
+          </div>
+
+          <!-- HP & Event Timeline Card -->
+          <div class="timeline-box">
+            <canvas id="timelineCanvas" width="860" height="128"></canvas>
+            <div class="timeline-footer">
+              <div class="legend" id="timelineLegend">
+                <span><span class="lg-line" style="background:#38bdf8;"></span>Your HP</span>
+                <span><span class="lg-line" style="background:#fb7185;"></span>Opp HP</span>
+                <span><span class="lg-tick" style="background:#f97316;"></span>Took Dmg</span>
+                <span><span class="lg-tick" style="background:#34d399;"></span>Dealt Dmg</span>
+                <span><span class="lg-tick" style="background:#fbbf24;"></span>Super</span>
+                <span><span class="lg-tick" style="background:#38bdf8;"></span>Select</span>
+                <span><span class="lg-dot" style="background:#c084fc;"></span>Notes</span>
+              </div>
+              <div class="row" style="gap:6px;">
+                <span id="rangeStatus" class="range-readout hidden"></span>
+                <button id="btnClearRange" class="ghost sm hidden" style="padding:2px 6px; font-size:11.5px;" onclick="clearRange()" title="Clear selected range">✕</button>
+                <button id="btnToggleEvents" class="ghost sm" style="padding:2px 7px; font-size:11px;" onclick="toggleEventChipsRow()">Events ▾</button>
+              </div>
+            </div>
+            <div id="eventChips" class="chips hidden" style="margin-top:4px;"></div>
+          </div>
+
+          <!-- Unified Transport & Contextual Practice Bar -->
+          <div class="transport-bar">
+            <div class="transport-steps">
+              <button class="step-btn" onclick="stepFrames(-100)">-100f</button>
+              <button class="step-btn" onclick="stepFrames(-20)">-20f</button>
+              <button class="step-btn" onclick="stepFrames(-5)">-5f</button>
+              <button id="btnPlayPause" class="step-btn primary play-btn" onclick="togglePlay()">▶</button>
+              <button class="step-btn" onclick="stepFrames(5)">+5f</button>
+              <button class="step-btn" onclick="stepFrames(20)">+20f</button>
+              <button class="step-btn" onclick="stepFrames(100)">+100f</button>
+            </div>
+            <span class="transport-div"></span>
+            <div class="transport-actions">
+              <button id="btnMarkStart" class="sm range-btn" onclick="markRangeBound('start')" title="Shortcut: [">[ Start</button>
+              <button id="btnMarkEnd" class="sm range-btn" onclick="markRangeBound('end')" title="Shortcut: ]">End ]</button>
+              <button class="sm pin-btn" onclick="openComposer(false)">+ Pin Moment</button>
+              <button id="btnPracticeTakeover" class="sm amber-cta" onclick="practiceCurrentFrame()" title="Launch instant Replay Takeover in FBNeo at current bracket/frame">▶ Practice Takeover</button>
+            </div>
+          </div>
+          <div id="studioTakeoverTip" class="quiet-tip">
+            Tip: Bind <span class="kbd">P1 Coin</span> (<span class="kbd">Select</span>) in FBNeo to bookmark live &amp; 1-frame retry in Takeover (or press <span class="kbd">Alt+1</span> on keyboard).
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: INDEPENDENTLY SCROLLABLE STUDY SIDEBAR -->
+        <aside class="studio-right">
+          <div class="sidebar-tabs nav-seg">
+            <button id="sideTabMoments" class="nav-tab active" onclick="setStudioSidebarTab('moments')">Moments (<span id="sidebarMomentsCnt">0</span>)</button>
+            <button id="sideTabSetNotes" class="nav-tab" onclick="setStudioSidebarTab('set_notes')">Set Notes</button>
+            <button id="sideTabProSearch" class="nav-tab pro-gated" aria-disabled="true" title="On the roadmap" onclick="setStudioSidebarTab('pro_search')">Pro Search</button>
+          </div>
+
+          <!-- SIDEBAR TAB 1: MOMENTS -->
+          <div id="sidePaneMoments" class="sidebar-pane">
+            <!-- Active Focus Goals Quick-Strip -->
+            <div id="studioGoalsStrip" class="goals-strip hidden"></div>
+
+            <!-- Inline Moment Composer Card -->
+            <div id="composerCard" class="composer-card">
+              <div class="row-between" style="margin-bottom:6px;">
+                <strong id="composerTitle" style="font-size:13.5px;">New Moment Note</strong>
+                <span id="composerAnchor" class="pill cached mono">R1 · gf0</span>
+              </div>
+              <div class="kind-grid" id="kindGrid"></div>
+              <div class="tag-grid" id="tagGrid"></div>
+              <input id="customTagInput" class="input compact-input" placeholder="+ Custom tags (comma-separated)" />
+              <textarea id="noteTextarea" class="input compact-textarea" placeholder="What happened here? What should you try instead? (Voice dictation works great!)"></textarea>
+              <div class="composer-pl-row">
+                <select id="composerPlaylistSelect" class="input compact-select" onchange="onComposerPlaylistChange()">
+                  <option value="">Playlist: None</option>
+                </select>
+                <label class="bake-check">
+                  <input id="drillToggle" type="checkbox" />
+                  <span>Bake Takeover (.fs)</span>
+                </label>
+              </div>
+              <div class="row-between" style="margin-top:8px;">
+                <button id="btnFindProAnswers" type="button" class="sm pro-btn pro-gated" aria-disabled="true" title="On the roadmap" onclick="runProSearchFromStudio()">🔍 Find Pro Answers</button>
+                <div class="row" style="gap:6px;">
+                  <button type="button" class="sm ghost" onclick="resetComposerDraft()">Cancel</button>
+                  <button id="btnSaveNote" type="button" class="emerald sm" onclick="saveAnnotation()">Save Moment</button>
+                </div>
+              </div>
+              <div class="composer-tip">Tip: Press [ and ] to adjust clip range · Space play/pause</div>
+            </div>
+
+            <!-- Saved Moments List -->
+            <div class="moments-list-header">
+              <span id="momentsSectionTitle" class="section-eyebrow">SAVED IN ROUND 1</span>
+              <div class="scope-seg">
+                <button id="btnScopeRound" class="scope-btn active" onclick="setNoteScope('round')">Round</button>
+                <button id="btnScopeMatch" class="scope-btn" onclick="setNoteScope('match')">Match</button>
+                <button id="btnScopeSet" class="scope-btn" onclick="setNoteScope('set')">Set</button>
+              </div>
+            </div>
+            <div id="notesList"></div>
+            <div id="otherRoundsHint" class="other-rounds-hint hidden"></div>
+          </div>
+
+          <!-- SIDEBAR TAB 2: SET NOTES -->
+          <div id="sidePaneSetNotes" class="sidebar-pane hidden">
+            <div class="card" style="margin-bottom:10px;">
+              <div class="row-between" style="margin-bottom:8px;">
+                <strong>Set Takeaway Note</strong>
+                <button class="sm emerald" onclick="saveSetNote()">Save Takeaway</button>
+              </div>
+              <textarea id="setNoteInput" class="input" style="min-height:140px;" placeholder="Overall lessons, opponent habits, or matchup adjustments for this set..."></textarea>
+              <div style="margin-top:8px;">
+                <input id="setNoteTagsInput" class="input compact-input" placeholder="Set tags (comma-separated, e.g. Anti-Air, Neutral)" />
+              </div>
+            </div>
+            <div id="studioSetMetaCard" class="card"></div>
+          </div>
+
+          <!-- SIDEBAR TAB 3: PRO SEARCH -->
+          <div id="sidePaneProSearch" class="sidebar-pane hidden">
+            <div class="card" style="margin-bottom:10px;">
+              <div class="row-between" style="margin-bottom:6px;">
+                <strong>Contextual Pro Search</strong>
+                <span id="proSearchRangePill" class="pill cached mono">Current frame</span>
+              </div>
+              <p style="font-size:12.5px; color:var(--muted); margin:0 0 8px;">
+                Searches the pre-warmed pro corpus for the closest matching spacing, roles, and trajectories.
+              </p>
+              <div class="row">
+                <select id="proSearchTier" class="input compact-select" style="flex:1;">
+                  <option value="">Auto Tier (Matchup → Char → All)</option>
+                  <option value="exact_matchup">Exact Matchup Only</option>
+                  <option value="same_self_char">Same Character</option>
+                  <option value="universal">Universal (All Roster)</option>
+                </select>
+                <button id="btnRunProSearch" class="primary sm pro-gated" aria-disabled="true" title="On the roadmap" onclick="runProSearchFromStudio()">🔍 Search</button>
+              </div>
+            </div>
+            <div id="proSearchResults">
+              <div class="empty-inline">Set a range with <strong>[</strong> and <strong>]</strong> (or pause at any moment) and click <strong>🔍 Search</strong>.</div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- VIEW 6: SHARED MOMENT (/m/:id) & SHARED PLAYLIST (/p/:id) -->
+    <section id="viewShared" class="view-section hidden">
+      <div id="sharedContent">
+        <div class="card empty-card">Loading shared study view...</div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- QUIET GLOBAL FOOTER (AGPL-3.0 Source Code, Feedback / Bug Report, Terms & DMCA) -->
+  <footer class="app-footer">
+    <div class="app-footer-inner">
+      <span>Fightcade Lab · Open-Source 3rd Strike Study Studio</span>
+      <div class="app-footer-links">
+        <a href="https://github.com/blankasballs/fightcade-lab/issues" target="_blank" rel="noopener">Feedback / Bug Report</a>
+        <span>·</span>
+        <a href="https://github.com/blankasballs/fightcade-lab" target="_blank" rel="noopener">Source Code (AGPL-3.0)</a>
+        <span>·</span>
+        <button type="button" class="footer-link-btn" onclick="openTermsModal()">Terms &amp; DMCA</button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- MODAL: ADD / EDIT FOCUS GOAL -->
+  <div id="goalModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeGoalModal()">
+    <div class="modal-card">
+      <div class="row-between" style="margin-bottom:10px;">
+        <strong id="goalModalTitle">Pin Focus Goal</strong>
+        <button class="ghost sm" onclick="closeGoalModal()">✕</button>
+      </div>
+      <div class="form-stack">
+        <label class="field-lbl">Goal Title
+          <input id="goalTitleInput" class="input" placeholder="e.g. Anti-air jump-ins with b+HP / air throw" />
+        </label>
+        <label class="field-lbl">Description / Cue (optional)
+          <textarea id="goalDescInput" class="input" style="min-height:68px;" placeholder="What specific cue or habit change are you practicing?"></textarea>
+        </label>
+        <div class="row">
+          <label class="field-lbl" style="flex:1;">Matchup Focus (optional)
+            <input id="goalMatchupInput" class="input" placeholder="e.g. Chun-Li, Alex, or leave blank" />
+          </label>
+          <label class="field-lbl" style="flex:1;">Linked Playlist
+            <select id="goalPlaylistSelect" class="input">
+              <option value="">None</option>
+            </select>
+          </label>
+        </div>
+        <label class="field-lbl">Tags (comma-separated)
+          <input id="goalTagsInput" class="input" placeholder="Anti-Air, Corner" />
+        </label>
+        <label class="field-lbl">Trend / Context Badge (optional)
+          <input id="goalTrendInput" class="input" placeholder="e.g. Trending down ↓ or From AI Checkup" />
+        </label>
+        <div class="row" style="justify-content:flex-end; margin-top:6px;">
+          <button class="sm" onclick="closeGoalModal()">Cancel</button>
+          <button id="btnSaveGoal" class="emerald sm" onclick="saveFocusGoalModal()">Save Focus Goal</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: GRADUATED FOCUS GOALS HISTORY -->
+  <div id="graduatedModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeGraduatedModal()">
+    <div class="modal-card modal-wide">
+      <div class="row-between" style="margin-bottom:10px;">
+        <strong>Graduated Focus Goals History</strong>
+        <button class="ghost sm" onclick="closeGraduatedModal()">✕</button>
+      </div>
+      <div id="graduatedList"></div>
+    </div>
+  </div>
+
+  <!-- MODAL: CREATE / EDIT PLAYLIST -->
+  <div id="playlistModal" class="modal-backdrop hidden" onclick="if(event.target===this) closePlaylistModal()">
+    <div class="modal-card">
+      <div class="row-between" style="margin-bottom:10px;">
+        <strong id="playlistModalTitle">New Playlist</strong>
+        <button class="ghost sm" onclick="closePlaylistModal()">✕</button>
+      </div>
+      <div class="form-stack">
+        <label class="field-lbl">Playlist Name
+          <input id="plNameInput" class="input" placeholder="e.g. Anti-Air Lab (Akuma)" />
+        </label>
+        <label class="field-lbl">Description
+          <textarea id="plDescInput" class="input" style="min-height:64px;" placeholder="Tough jump-in spacings + pro answers"></textarea>
+        </label>
+        <div class="row">
+          <label class="field-lbl" style="flex:1;">Type
+            <select id="plKindSelect" class="input">
+              <option value="drill">Drill &amp; Takeover Lab</option>
+              <option value="matchup">Matchup Prep</option>
+              <option value="study">Study Reel</option>
+              <option value="pro_reel">Pro Study Reel</option>
+            </select>
+          </label>
+          <label class="bake-check" style="margin-top:18px;">
+            <input id="plShareableCheck" type="checkbox" />
+            <span>Shareable Study Reel</span>
+          </label>
+        </div>
+        <div class="row" style="justify-content:flex-end; margin-top:6px;">
+          <button class="sm" onclick="closePlaylistModal()">Cancel</button>
+          <button id="btnSavePlaylist" class="emerald sm" onclick="savePlaylistModal()">Save Playlist</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: PLAYLIST WATCH MODE (STUDY REEL WITH OVERLAYS) -->
+  <div id="watchModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeWatchMode()">
+    <div class="modal-card modal-watch">
+      <div class="row-between" style="margin-bottom:10px;">
+        <div class="row" style="gap:8px;">
+          <strong id="watchTitle">Playlist Watch Mode</strong>
+          <span id="watchProgressPill" class="pill cached mono">Clip 1 of 1</span>
+        </div>
+        <div class="row" style="gap:6px;">
+          <button id="btnWatchSwitchTrain" class="sm amber-cta" onclick="switchWatchToTrain()">▶ Train Mode</button>
+          <button class="ghost sm" onclick="closeWatchMode()">✕</button>
+        </div>
+      </div>
+      <div class="watch-layout">
+        <div class="watch-stage-col">
+          <div class="video-shell">
+            <div class="video-stage watch-video-stage">
+              <video id="watchVideo" playsinline webkit-playsinline muted preload="auto"></video>
+              <canvas id="watchOverlayCanvas" width="768" height="576"></canvas>
+            </div>
+            <div class="mini-prog-track" onclick="seekWatchReel(event)">
+              <div id="watchProgFill" class="mini-prog-fill"></div>
+            </div>
+            <div class="studio-video-bar" id="watchOverlayBar">
+              <div class="row" style="gap:5px;">
+                <button id="btnWatchPlay" class="sm primary" onclick="toggleWatchPlay()">❚❚</button>
+                <button class="sm" onclick="prevWatchItem()">← Prev</button>
+                <button class="sm" onclick="nextWatchItem()">Next →</button>
+                <button id="btnWatchLoopMode" class="sm" onclick="toggleWatchAutoAdvance()">Loop Current</button>
+              </div>
+              <div class="row" style="gap:4px;">
+                <button class="ov-btn" data-ov="hitboxes" onclick="toggleOverlayOpt('hitboxes')">Hitboxes</button>
+                <button class="ov-btn" data-ov="inputs" onclick="toggleOverlayOpt('inputs')">Inputs</button>
+                <button class="ov-btn" data-ov="sticks" onclick="toggleOverlayOpt('sticks')">Sticks</button>
+                <button class="ov-btn" data-ov="gauges" onclick="toggleOverlayOpt('gauges')">Gauges</button>
+              </div>
+              <div class="speed-group">
+                <button class="speed-btn" data-wrate="0.25" onclick="setWatchRate(0.25)">0.25x</button>
+                <button class="speed-btn" data-wrate="0.5" onclick="setWatchRate(0.5)">0.5x</button>
+                <button class="speed-btn active" data-wrate="1" onclick="setWatchRate(1)">1.0x</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="watchSidePanel" class="watch-side-col"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: PLAYLIST TRAIN MODE (DESKTOP TAKEOVER RUNNER) -->
+  <div id="trainModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeTrainMode()">
+    <div class="modal-card modal-train">
+      <div class="row-between" style="margin-bottom:10px;">
+        <div class="row" style="gap:8px;">
+          <strong id="trainTitle">Train Mode</strong>
+          <span id="trainProgressPill" class="pill drill mono">Drill 1 of 1</span>
+        </div>
+        <div class="row" style="gap:6px;">
+          <button class="sm" onclick="switchTrainToWatch()">Watch Mode</button>
+          <button class="ghost sm" onclick="closeTrainMode()">✕</button>
+        </div>
+      </div>
+      <div id="trainBody"></div>
+    </div>
+  </div>
+
+  <!-- QUICK ADD-TO-PLAYLIST PICKER MODAL -->
+  <div id="addToPlModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeAddToPlaylistModal()">
+    <div class="modal-card" style="max-width:420px;">
+      <div class="row-between" style="margin-bottom:10px;">
+        <strong>Add to Playlist</strong>
+        <button class="ghost sm" onclick="closeAddToPlaylistModal()">✕</button>
+      </div>
+      <div id="addToPlBody"></div>
+    </div>
+  </div>
+
+  <!-- CALM COMPANION EXPLAINER MODAL (Cross-User Takeover when Companion not connected) -->
+  <div id="companionModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeCompanionModal()">
+    <div class="modal-card" style="max-width:460px;">
+      <div class="row-between" style="margin-bottom:8px;">
+        <strong>▶ Practice in Replay Takeover</strong>
+        <button class="ghost sm" onclick="closeCompanionModal()">✕</button>
+      </div>
+      <p id="companionModalContext" style="font-size:13.5px; color:var(--text-body); margin:0 0 8px;">
+        Practice any shared clip straight inside FBNeo with instant 1-frame retry, slow-mo, and Sandbox Training.
+      </p>
+      <p style="font-size:12.5px; color:var(--muted); margin:0 0 14px;">
+        Install the free, open-source Windows Desktop Companion alongside Fightcade — it uses your own local ROMs, never modifies live netplay, and keeps full-match recordings on your PC.
+      </p>
+      <div class="row" style="justify-content:flex-end; gap:8px;">
+        <button class="sm" onclick="closeCompanionModal()">Keep Studying on Web</button>
+        <a id="btnCompanionUriFallback" class="btn-link sm hidden" href="#">⚡ Open in Companion</a>
+        <a class="btn-link primary sm" href="https://github.com/blankasballs/fightcade-lab" target="_blank" rel="noopener">Get Windows Companion →</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- QUIET CONTENT REPORT MODAL (In-App D1 Admin Queue, Zero Webhooks) -->
+  <div id="reportModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeReportModal()">
+    <div class="modal-card" style="max-width:440px;">
+      <div class="row-between" style="margin-bottom:8px;">
+        <strong>Report Shared Content</strong>
+        <button class="ghost sm" onclick="closeReportModal()">✕</button>
+      </div>
+      <div class="form-stack">
+        <label class="field-lbl">Reason
+          <select id="reportReasonSelect" class="input">
+            <option value="inappropriate_content">Inappropriate or abusive content</option>
+            <option value="spam">Spam or unrelated video</option>
+            <option value="copyright_dmca">Copyright / DMCA takedown request</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label class="field-lbl">Details (optional)
+          <textarea id="reportDetailsInput" class="input" style="min-height:76px;" placeholder="Brief context for moderators..."></textarea>
+        </label>
+        <div id="reportTurnstileBox" class="turnstile-box hidden"></div>
+        <div class="row" style="justify-content:flex-end; gap:6px; margin-top:4px;">
+          <button class="sm" onclick="closeReportModal()">Cancel</button>
+          <button id="btnSubmitReport" class="sm danger" onclick="submitContentReport()">Submit Report</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TERMS & DMCA MODAL -->
+  <div id="termsModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeTermsModal()">
+    <div class="modal-card" style="max-width:520px;">
+      <div class="row-between" style="margin-bottom:8px;">
+        <strong>Terms, Privacy &amp; DMCA Policy</strong>
+        <button class="ghost sm" onclick="closeTermsModal()">✕</button>
+      </div>
+      <div style="font-size:13px; color:var(--text-body); display:flex; flex-direction:column; gap:8px;">
+        <p style="margin:0;"><strong>No ROMs Hosted:</strong> Fightcade Lab never hosts or distributes copyrighted arcade ROMs or emulator binaries. Shared clips are short user-captured study clips (6–15s).</p>
+        <p style="margin:0;"><strong>Privacy &amp; Portability:</strong> Moments and playlists are private by default (with optional unlisted share links). Signed-in users can export all data as JSON or delete their account and clips anytime.</p>
+        <p style="margin:0;"><strong>Takedowns / DMCA:</strong> Use the quiet <strong>Report</strong> button on any shared link or email <a id="termsDmcaEmail" href="mailto:dmca@fightcadelab.com">dmca@fightcadelab.com</a> with the exact link for prompt removal.</p>
+        <p style="margin:0;"><strong>License:</strong> Fightcade Lab is open-source under <code>AGPL-3.0-or-later</code>.</p>
+      </div>
+      <div class="row" style="justify-content:flex-end; margin-top:12px;">
+        <button class="sm primary" onclick="closeTermsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOCAL SHARE BUNDLE EXPORTER MODAL -->
+  <div id="shareBundleModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeShareBundleModal()">
+    <div class="modal-card" style="max-width:480px;">
+      <div class="row-between" style="margin-bottom:10px;">
+        <strong>Share Clip Bundle (R2 Ready)</strong>
+        <button class="ghost sm" onclick="closeShareBundleModal()">✕</button>
+      </div>
+      <div id="shareBundleBody"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script defer src="/assets/js/state.js"></script>
+  <script defer src="/assets/js/status_popover.js"></script>
+  <script defer src="/assets/js/overlays.js"></script>
+  <script defer src="/assets/js/home.js"></script>
+  <script defer src="/assets/js/studio.js"></script>
+  <script defer src="/assets/js/matches.js"></script>
+  <script defer src="/assets/js/notes.js"></script>
+  <script defer src="/assets/js/playlists.js"></script>
+  <script defer src="/assets/js/insights.js"></script>
+  <script defer src="/assets/js/report_viewer.js"></script>
+  <script defer src="/assets/js/shared.js"></script>
+  <script defer src="/assets/js/app.js"></script>
+</body>
+</html>
