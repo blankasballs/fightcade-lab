@@ -1403,15 +1403,22 @@ async function loadAuthState() {
   renderAuthControls();
 }
 
+let _accountMenuOpen = false;
+
 function renderAuthControls() {
   const host = document.getElementById("authControls");
+  const menu = document.getElementById("accountMenu");
   if (!host) return;
   if (!isHostedMode()) {
     host.classList.add("hidden");
+    closeAccountMenu();
+    if (menu) menu.innerHTML = "";
     return;
   }
   host.classList.remove("hidden");
   if (!state.auth.authenticated || !state.auth.user) {
+    closeAccountMenu();
+    if (menu) menu.innerHTML = "";
     const next = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
     host.innerHTML = `<a class="btn-link primary sm" href="${esc(safeHref(apiUrl(`/api/auth/discord/start?next=${next}`)))}">Sign in with Discord</a>`;
     return;
@@ -1419,25 +1426,95 @@ function renderAuthControls() {
   const u = state.auth.user;
   host.innerHTML = `
     <div class="auth-pill-wrap">
-      <button class="sm" onclick="toggleAccountMenu()" title="Account, data export &amp; settings">
+      <button id="btnAccountMenu" type="button" class="sm" aria-expanded="${_accountMenuOpen ? "true" : "false"}" aria-controls="accountMenu" onclick="toggleAccountMenu()" title="Account, data export &amp; settings">
         ${esc(u.discord_username || "Account")} ▾
       </button>
-      <div id="accountMenu" class="account-menu hidden">
-        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
-          Signed in as <strong>${esc(u.discord_username)}</strong>
-          ${state.auth.quota ? `<div style="margin-top:2px;">Clip Storage: ${formatBytes(state.auth.quota.user_used_bytes)} / ${formatBytes(state.auth.quota.user_cap_bytes)}</div>` : ""}
-        </div>
-        <button class="sm" style="width:100%; margin-bottom:6px;" onclick="exportMyAccountData()">⬇ Export My Data (JSON)</button>
-        <button class="sm" style="width:100%; margin-bottom:6px;" onclick="logoutAccount()">Sign Out</button>
-        <button class="sm danger" style="width:100%;" onclick="deleteMyAccount()">Delete Account &amp; Clips</button>
-      </div>
     </div>
   `;
+  if (menu) {
+    menu.innerHTML = `
+      <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+        Signed in as <strong>${esc(u.discord_username)}</strong>
+        ${state.auth.quota ? `<div style="margin-top:2px;">Clip Storage: ${formatBytes(state.auth.quota.user_used_bytes)} / ${formatBytes(state.auth.quota.user_cap_bytes)}</div>` : ""}
+      </div>
+      <button type="button" class="sm" style="width:100%; margin-bottom:6px;" onclick="closeAccountMenu(); exportMyAccountData()">⬇ Export My Data (JSON)</button>
+      <button type="button" class="sm" style="width:100%; margin-bottom:6px;" onclick="closeAccountMenu(); logoutAccount()">Sign Out</button>
+      <button type="button" class="sm danger" style="width:100%;" onclick="closeAccountMenu(); deleteMyAccount()">Delete Account &amp; Clips</button>
+    `;
+  }
+}
+
+function positionAccountMenu() {
+  const menu = document.getElementById("accountMenu");
+  const btn = document.getElementById("btnAccountMenu");
+  if (!menu || !_accountMenuOpen) return;
+  const vw = window.innerWidth || document.documentElement.clientWidth || 360;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 640;
+  const rect = btn && typeof btn.getBoundingClientRect === "function" ? btn.getBoundingClientRect() : { bottom: 0, right: vw - 12, height: 0 };
+  let anchorBottom = rect.bottom;
+  if (vw < 900 || rect.height === 0) {
+    const bar = document.getElementById("appTopbar");
+    anchorBottom = bar && typeof bar.getBoundingClientRect === "function" ? bar.getBoundingClientRect().bottom : 54;
+  }
+  const topPx = Math.max(12, Math.min(Math.round(anchorBottom + 8), Math.max(12, vh - 180)));
+
+  menu.style.top = `${topPx}px`;
+  menu.style.maxHeight = `${Math.max(160, vh - topPx - 16)}px`;
+
+  if (vw < 900) {
+    menu.style.left = "12px";
+    menu.style.right = "12px";
+    menu.style.width = "auto";
+  } else {
+    const popW = Math.min(260, vw - 24);
+    const rightEdge = Math.min(vw - 12, rect.right || vw - 12);
+    const leftPx = Math.max(12, Math.round(rightEdge - popW));
+    menu.style.left = `${leftPx}px`;
+    menu.style.right = "auto";
+    menu.style.width = `${popW}px`;
+  }
+}
+
+function closeAccountMenu() {
+  _accountMenuOpen = false;
+  const menu = document.getElementById("accountMenu");
+  if (menu) menu.classList.add("hidden");
+  const btn = document.getElementById("btnAccountMenu");
+  if (btn && typeof btn.setAttribute === "function") btn.setAttribute("aria-expanded", "false");
 }
 
 function toggleAccountMenu() {
-  const el = document.getElementById("accountMenu");
-  if (el) el.classList.toggle("hidden");
+  const menu = document.getElementById("accountMenu");
+  if (!menu) return;
+  _accountMenuOpen = !_accountMenuOpen;
+  if (_accountMenuOpen) {
+    if (typeof closeMobileNavMenu === "function") closeMobileNavMenu();
+    if (typeof closeStatusPopover === "function") closeStatusPopover();
+    if (typeof setTopbarHidden === "function") setTopbarHidden(false);
+  }
+  menu.classList.toggle("hidden", !_accountMenuOpen);
+  const btn = document.getElementById("btnAccountMenu");
+  if (btn && typeof btn.setAttribute === "function") btn.setAttribute("aria-expanded", _accountMenuOpen ? "true" : "false");
+  if (_accountMenuOpen) {
+    positionAccountMenu();
+  }
+}
+
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  document.addEventListener("click", e => {
+    if (!_accountMenuOpen) return;
+    const authWrap = document.getElementById("authControls");
+    const menu = document.getElementById("accountMenu");
+    const inAuth = authWrap && typeof authWrap.contains === "function" && authWrap.contains(e.target);
+    const inMenu = menu && typeof menu.contains === "function" && menu.contains(e.target);
+    if (!inAuth && !inMenu) closeAccountMenu();
+  });
+}
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("resize", () => {
+    if (_accountMenuOpen) positionAccountMenu();
+  });
 }
 
 function exportMyAccountData() {

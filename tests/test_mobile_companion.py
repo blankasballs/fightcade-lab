@@ -1207,3 +1207,17 @@ def test_mobile_topbar_hamburger_drawer_and_brand_icon():
     for fn_name in ("function toggleMobileNavMenu()", "function closeMobileNavMenu(", "function isMobileNavMenuOpen()"):
         assert fn_name in app_js
     assert "closeMobileNavMenu()" in pop_js
+
+    # Account menu is mounted at body level (outside </header>) with position: fixed so it never clips inside the mobile drawer
+    header_end = html.index("</header>")
+    assert html.index('id="statusPopover"') > header_end
+    assert html.index('id="accountMenu"') > header_end
+    acct_css_start = css.index(".account-menu {")
+    acct_css_end = css.index("}", acct_css_start)
+    assert "position: fixed;" in css[acct_css_start:acct_css_end]
+    state_js = (web_dir / "js" / "state.js").read_text(encoding="utf-8")
+    assert "function positionAccountMenu()" in state_js
+    assert "function closeAccountMenu()" in state_js
+    assert "closeMobileNavMenu()" in state_js
+    assert "closeAccountMenu()" in app_js
+    assert "closeAccountMenu()" in pop_js

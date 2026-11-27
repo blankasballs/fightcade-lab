@@ -89,6 +89,7 @@ function toggleStatusPopover() {
   if (!pop) return;
   if (_statusPopoverOpen) {
     if (typeof closeMobileNavMenu === "function") closeMobileNavMenu();
+    if (typeof closeAccountMenu === "function") closeAccountMenu();
     if (typeof setTopbarHidden === "function") setTopbarHidden(false);
   }
   pop.classList.toggle("hidden", !_statusPopoverOpen);

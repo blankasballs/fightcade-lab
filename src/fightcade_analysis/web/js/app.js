@@ -597,6 +597,7 @@ document.addEventListener("keydown", e => {
       return;
     }
     closeStatusPopover();
+    if (typeof closeAccountMenu === "function") closeAccountMenu();
     if (state.watchPlaylistId) {
       if (state.watchEditingNote && typeof cancelWatchNoteEdit === "function") {
         e.preventDefault();
@@ -709,6 +710,7 @@ function toggleMobileNavMenu() {
   if (nextOpen) {
     _mobileNavMenuOpen = true;
     if (typeof closeStatusPopover === "function") closeStatusPopover();
+    if (typeof closeAccountMenu === "function") closeAccountMenu();
     setTopbarHidden(false);
     _syncMobileNavMenuDom();
     pushModalHistory("mobile_menu");
