@@ -12,8 +12,8 @@ function _isLocalSetupMissing(caps) {
   if (!caps || caps.mode !== "local_companion") return false;
   const env = caps.environment;
   if (!env || typeof env !== "object") return false;
-  if (!("fbneo_found" in env) && !("rom_found" in env)) return false;
-  return !env.fbneo_found || !env.rom_found;
+  if (!("fbneo_found" in env) && !("rom_found" in env) && !("ffmpeg_found" in env)) return false;
+  return !env.fbneo_found || !env.rom_found || env.ffmpeg_found === false;
 }
 
 function _formatPopoverJobTitle(job) {
@@ -278,6 +278,7 @@ function buildStatusPopoverHtml() {
     const missingItems = [];
     if (!env.fbneo_found) missingItems.push("Fightcade FBNeo not found");
     if (!env.rom_found) missingItems.push("3rd Strike ROM not detected");
+    if (env.ffmpeg_found === false) missingItems.push("FFmpeg not installed");
     warningHtml = `
       <div class="pop-warning" role="alert">
         <strong>Setup needed:</strong> ${esc(missingItems.join(" · "))}.
@@ -334,13 +335,24 @@ function buildStatusPopoverHtml() {
   const diagOpen = _popDiagnosticsOpen !== null ? _popDiagnosticsOpen : setupMissing;
   const fbneoText = env.fbneo_found ? (env.fast_fbneo_found ? "Fast Engine ✓" : "Stock FBNeo ✓") : "Not found";
   const romText = env.rom_found ? "Detected ✓" : "Check fcadefbneo.ini";
+  const hasFfmpegKey = "ffmpeg_found" in env;
+  const ffmpegText = env.ffmpeg_found ? "Ready ✓" : "Not installed";
   const grouflonText = caps.has_grouflon ? "Ready ✓" : "Optional (not installed)";
+  const popInstallFastBtn = (env.fbneo_found && !env.fast_fbneo_found)
+    ? `<button id="btnPopInstallFastFbneo" type="button" class="sm" style="margin-top:8px; width:100%;" onclick="event.stopPropagation(); installExternalToolFromUi('install_fast_fbneo', this)">Download Fast Capture Engine</button>`
+    : "";
+  const popInstallFfmpegBtn = (env.ffmpeg_found === false)
+    ? `<button id="btnPopInstallFfmpeg" type="button" class="sm primary" style="margin-top:8px; width:100%;" onclick="event.stopPropagation(); installExternalToolFromUi('install_ffmpeg', this)">Download FFmpeg</button>`
+    : "";
   const diagBodyHtml = diagOpen
     ? `
       <div class="pop-diag-body" onclick="event.stopPropagation()">
         <div class="env-row"><span>Fightcade FBNeo</span><span class="${env.fbneo_found ? "env-ok" : "env-warn"}">${esc(fbneoText)}</span></div>
         <div class="env-row"><span>3rd Strike ROM</span><span class="${env.rom_found ? "env-ok" : "env-warn"}">${esc(romText)}</span></div>
+        ${hasFfmpegKey ? `<div class="env-row"><span>FFmpeg</span><span class="${env.ffmpeg_found ? "env-ok" : "env-warn"}">${esc(ffmpegText)}</span></div>` : ""}
         <div class="env-row"><span>Grouflon Hitboxes</span><span class="${caps.has_grouflon ? "env-ok" : "env-warn"}">${esc(grouflonText)}</span></div>
+        ${popInstallFastBtn}
+        ${popInstallFfmpegBtn}
         ${canRender ? `<button id="btnPopScan" type="button" class="sm" style="margin-top:8px; width:100%;" onclick="event.stopPropagation(); triggerScanLatestFromPopover()">Scan Latest Match</button>` : ""}
       </div>
     `

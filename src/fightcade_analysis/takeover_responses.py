@@ -26,8 +26,6 @@ import time
 from typing import Any, Callable
 import uuid
 
-import imageio_ffmpeg
-
 from fightcade_analysis.annotations import create_annotation, get_annotation
 from fightcade_analysis.audio_mute import start_mute_watcher
 from fightcade_analysis.clip_renderer import (
@@ -38,7 +36,7 @@ from fightcade_analysis.clip_renderer import (
     resolve_capture_fbneo_exe,
     resolve_grouflon_dir,
 )
-from fightcade_analysis.env_config import build_fbneo_cmdline, ensure_fbneo_config_inheritance
+from fightcade_analysis.env_config import build_fbneo_cmdline, ensure_fbneo_config_inheritance, require_local_ffmpeg
 from fightcade_analysis.match_catalog import detect_default_username
 from fightcade_analysis.round_renderer import (
     DEFAULT_MOBILE_CRF,
@@ -215,7 +213,8 @@ def _render_response_media(
     if g_dir is not None:
         env["FC_GROUFLON_DIR"] = str(g_dir)
     if use_direct_pipe:
-        env["FC_FFMPEG_EXE"] = imageio_ffmpeg.get_ffmpeg_exe()
+        eff_data_dir = resp_dir.parents[1] if len(resp_dir.parents) >= 2 and resp_dir.parent.name == RESPONSES_SUBDIR else DEFAULT_DATA_DIR
+        env["FC_FFMPEG_EXE"] = require_local_ffmpeg(eff_data_dir)
         env["FC_VIDEO_SCALE"] = str(max(1, int(scale)))
         env["FC_VIDEO_CRF"] = str(int(crf))
         env["FC_VIDEO_GOP"] = str(int(gop_size) if gop_size else 0)

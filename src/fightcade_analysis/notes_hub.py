@@ -15,7 +15,7 @@ from typing import Any
 
 from fightcade_analysis.annotations import get_set_notes_map, list_annotations
 from fightcade_analysis.clip_renderer import DEFAULT_DATA_DIR
-from fightcade_analysis.coaching import pretty_char
+from fightcade_analysis.characters import pretty_char
 from fightcade_analysis.match_catalog import detect_default_username, list_matches
 from fightcade_analysis.naming import extract_match_date, format_rank_letter, lookup_replay_metadata
 from fightcade_analysis.perspective import (

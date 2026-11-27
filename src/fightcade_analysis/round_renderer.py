@@ -27,11 +27,11 @@ import time
 from typing import Any, Callable
 import uuid
 
-import imageio_ffmpeg
 import numpy as np
 import pandas as pd
 
 from fightcade_analysis.audio_mute import start_mute_watcher
+from fightcade_analysis.characters import pretty_char
 from fightcade_analysis.clip_renderer import (
     DEFAULT_CAPTURE_LUA,
     DEFAULT_DATA_DIR,
@@ -43,12 +43,12 @@ from fightcade_analysis.clip_renderer import (
     resolve_capture_fbneo_exe,
     resolve_grouflon_dir,
 )
-from fightcade_analysis.coaching import pretty_char
 from fightcade_analysis.env_config import (
     build_fbneo_cmdline,
     ensure_fbneo_config_inheritance,
     get_disk_cache_cap_bytes,
     get_disk_cache_cap_gb,
+    require_local_ffmpeg,
 )
 from fightcade_analysis.features import POSTURE_KNOCKDOWN
 from fightcade_analysis.naming import resolve_replay_players_and_ranks
@@ -110,6 +110,7 @@ def mux_video_and_pcm_to_mp4(
     fps: int = 60,
     audio_bitrate: str = DEFAULT_AUDIO_BITRATE,
     ffmpeg_exe: str | None = None,
+    data_dir: Path = DEFAULT_DATA_DIR,
 ) -> float:
     """Fast `-c:v copy` mux of captured video MP4 + lockstep raw s16le stereo PCM into final MP4.
 
@@ -117,7 +118,7 @@ def mux_video_and_pcm_to_mp4(
     every 60fps video frame maps 1:1 to its exact synthesized PCM audio frame with zero drift.
     """
     t0 = time.perf_counter()
-    ff = ffmpeg_exe or imageio_ffmpeg.get_ffmpeg_exe()
+    ff = ffmpeg_exe or require_local_ffmpeg(data_dir)
     in_rate = max(8000, int(samples_per_frame) * int(fps))
     tmp_out = out_mp4.with_name(f"{out_mp4.stem}.mux_{os.getpid()}_{uuid.uuid4().hex[:6]}.mp4")
     cmd = [
@@ -576,7 +577,8 @@ def render_round_mp4(
     env["FC_HIDE_T0_BANNER"] = "1"
     env["FC_WRITE_GF_RANGE"] = "1"
     if use_direct_pipe:
-        env["FC_FFMPEG_EXE"] = imageio_ffmpeg.get_ffmpeg_exe()
+        eff_data_dir = out_dir.parents[1] if len(out_dir.parents) >= 2 and out_dir.parent.name == "replays" else DEFAULT_DATA_DIR
+        env["FC_FFMPEG_EXE"] = require_local_ffmpeg(eff_data_dir)
         env["FC_VIDEO_SCALE"] = str(max(1, int(scale)))
         env["FC_VIDEO_CRF"] = str(int(crf))
         env["FC_VIDEO_GOP"] = str(int(gop_size) if gop_size else 0)
@@ -995,7 +997,8 @@ def _render_rounds_batch_worker(
     env["FC_BATCH_ROUNDS_FILE"] = str(batch_tsv)
     env["FC_HIDE_T0_BANNER"] = "1"
     env["FC_WRITE_GF_RANGE"] = "1"
-    env["FC_FFMPEG_EXE"] = imageio_ffmpeg.get_ffmpeg_exe()
+    eff_data_dir = out_dir.parents[1] if len(out_dir.parents) >= 2 and out_dir.parent.name == "replays" else DEFAULT_DATA_DIR
+    env["FC_FFMPEG_EXE"] = require_local_ffmpeg(eff_data_dir)
     env["FC_VIDEO_SCALE"] = str(max(1, int(scale)))
     env["FC_VIDEO_CRF"] = str(int(crf))
     env["FC_VIDEO_GOP"] = str(int(gop_size) if gop_size else 0)

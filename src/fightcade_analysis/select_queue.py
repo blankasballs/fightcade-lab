@@ -38,9 +38,9 @@ from fightcade_analysis.clip_renderer import (
     resolve_capture_fbneo_exe,
     resolve_grouflon_dir,
 )
-from fightcade_analysis.coaching import pretty_char
+from fightcade_analysis.characters import pretty_char
 from fightcade_analysis.csv_to_parquet import convert_csv_to_parquet
-from fightcade_analysis.env_config import build_fbneo_cmdline, ensure_fbneo_config_inheritance
+from fightcade_analysis.env_config import build_fbneo_cmdline, ensure_fbneo_config_inheritance, require_local_ffmpeg
 from fightcade_analysis.fetch_replays import (
     fetch_quarks,
     resolve_stream_target,
@@ -488,13 +488,12 @@ def scan_replay_for_select_marks(
     single_pass_enabled = bool(render_mobile_video and use_maxspeed)
     eff_encoder = ""
     if single_pass_enabled:
-        import imageio_ffmpeg
         from fightcade_analysis.round_renderer import resolve_video_encoder
 
         eff_encoder = resolve_video_encoder()
         mobile_out_dir.mkdir(parents=True, exist_ok=True)
         env["FC_MOBILE_OUT_DIR"] = str(mobile_out_dir)
-        env["FC_FFMPEG_EXE"] = imageio_ffmpeg.get_ffmpeg_exe()
+        env["FC_FFMPEG_EXE"] = require_local_ffmpeg(data_root)
         env["FC_VIDEO_SCALE"] = str(max(1, int(scale)))
         env["FC_VIDEO_CRF"] = str(int(crf))
         env["FC_VIDEO_GOP"] = str(int(gop_size) if gop_size else 0)

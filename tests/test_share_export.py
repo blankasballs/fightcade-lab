@@ -9,11 +9,11 @@ import re
 import subprocess
 import threading
 
-import imageio_ffmpeg
 import numpy as np
 import pytest
 import requests
 
+from fightcade_analysis.env_config import require_local_ffmpeg
 from fightcade_analysis.server import create_server
 from fightcade_analysis.share_export import (
     MAX_SHARE_CLIP_BYTES,
@@ -26,8 +26,8 @@ from fightcade_analysis.share_export import (
 
 
 def _create_synthetic_round_mp4(out_mp4: Path, *, duration_s: float = 3.0) -> None:
-    """Create a real valid 60fps 768x448 H.264 MP4 via bundled imageio-ffmpeg."""
-    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    """Create a real valid 60fps 768x448 H.264 MP4 via local ffmpeg."""
+    ffmpeg = require_local_ffmpeg()
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         ffmpeg,
@@ -53,7 +53,7 @@ def _create_synthetic_round_mp4(out_mp4: Path, *, duration_s: float = 3.0) -> No
 
 
 def _probe_video_stream_info(mp4_path: Path) -> str:
-    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg = require_local_ffmpeg()
     res = subprocess.run([ffmpeg, "-i", str(mp4_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return res.stderr.decode(errors="replace")
 

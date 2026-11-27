@@ -99,14 +99,23 @@ function renderHomeWorkbench() {
     const env = (state.capabilities && state.capabilities.environment) || {};
     const checkBadge = (ok, label) =>
       `<span class="pill ${ok ? "ready" : "unproc"}">${ok ? "✓" : "○"} ${esc(label)}</span>`;
+    const installFastBtn = (env.fbneo_found && !env.fast_fbneo_found)
+      ? `<button id="btnHomeInstallFastFbneo" type="button" class="sm primary" onclick="installExternalToolFromUi('install_fast_fbneo', this)">Download Fast Capture Engine</button>`
+      : "";
+    const installFfmpegBtn = (env.ffmpeg_found === false)
+      ? `<button id="btnHomeInstallFfmpeg" type="button" class="sm primary" onclick="installExternalToolFromUi('install_ffmpeg', this)">Download FFmpeg</button>`
+      : "";
     const wizardChecks = `
         <div class="row" style="gap:6px; margin:8px 0 12px;">
           ${checkBadge(env.fbneo_found, "Fightcade FBNeo")}
           ${checkBadge(env.rom_found, "3S ROM")}
-          ${checkBadge(env.has_grouflon, "Grouflon Hitboxes (optional)")}
-          ${checkBadge(env.fast_fbneo_found, "Fast Capture Engine (optional)")}
+          ${checkBadge(env.fast_fbneo_found, "Fast Capture Engine")}
+          ${checkBadge(env.ffmpeg_found, "FFmpeg")}
+          ${checkBadge(env.has_grouflon, "Grouflon (optional)")}
         </div>
         <div class="row" style="gap:8px; margin-bottom:12px;">
+          ${installFastBtn}
+          ${installFfmpegBtn}
           <button class="sm" onclick="registerCompanionUriFromUi()">⚡ Register fightcadelab:// Links</button>
           <button class="sm" onclick="pairLocalCompanionWithBrowser()">🔗 Pair with Browser</button>
         </div>
@@ -126,7 +135,7 @@ function renderHomeWorkbench() {
             </div>
           </div>
           <div class="hero-welcome-art">
-            <img src="/assets/img/header-astro-lab.jpg" alt="Fightcade Lab — Astro City candy cabinet and lab flask" loading="eager" />
+            <img src="/assets/img/header-astro-lab.jpg" alt="Fightcade Lab Astro City candy cabinet and lab flask" loading="eager" />
           </div>
         </div>
       </div>

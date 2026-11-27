@@ -2027,6 +2027,42 @@ function copyActiveShareLink() {
   copyText(url, "Share link copied!");
 }
 
+async function installExternalToolFromUi(action, btnEl = null) {
+  const isFfmpeg = action === "install_ffmpeg";
+  const label = isFfmpeg ? "FFmpeg" : "Fast Capture Engine";
+  const origHtml = btnEl ? btnEl.innerHTML : "";
+  if (btnEl) {
+    if (btnEl.disabled) return;
+    btnEl.disabled = true;
+    btnEl.innerHTML = `<span class="btn-spin"></span> Downloading ${esc(label)}...`;
+  }
+  try {
+    await api("/api/onboarding", {
+      method: "POST",
+      body: JSON.stringify({ action, consent: true }),
+    });
+    if (typeof loadCapabilities === "function") {
+      await loadCapabilities();
+    }
+    if (state.activeView === "home" && typeof renderHomeWorkbench === "function") {
+      renderHomeWorkbench();
+    }
+    if (typeof isStatusPopoverOpen === "function" && isStatusPopoverOpen() && typeof renderStatusPopover === "function") {
+      renderStatusPopover();
+    }
+    if (typeof updateStatusPillUi === "function") {
+      updateStatusPillUi();
+    }
+    toast(`${label} installed and verified!`);
+  } catch (err) {
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.innerHTML = origHtml;
+    }
+    toast(`Could not download ${label}: ${err.message}`);
+  }
+}
+
 async function pairLocalCompanionWithBrowser() {
   try {
     const res = await api("/api/companion/pair-start", { method: "POST", body: JSON.stringify({}) });

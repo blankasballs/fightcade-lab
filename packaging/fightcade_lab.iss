@@ -3,7 +3,9 @@
 ; NEVER bundles fcadefbneo_fast.exe, ffmpeg.exe, Grouflon 3rd_training_lua, or ROMs.
 
 #define AppName "Fightcade Lab Companion"
+#ifndef AppVersion
 #define AppVersion "0.1.0"
+#endif
 #define AppPublisher "Fightcade Lab Contributors"
 #define AppURL "https://fightcadelab.com"
 #define AppExeName "FightcadeLabCompanion.exe"
@@ -21,6 +23,8 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist\installer
 OutputBaseFilename=FightcadeLabSetup-{#AppVersion}
+SetupIconFile=..\src\fightcade_analysis\web\favicon.ico
+UninstallDisplayIcon={app}\{#AppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

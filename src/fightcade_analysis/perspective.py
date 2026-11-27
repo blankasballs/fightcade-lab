@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generic, Literal, TypeVar
 
-from fightcade_analysis.coaching import pretty_char
+from fightcade_analysis.characters import pretty_char
 from fightcade_analysis.naming import format_rank_letter, lookup_replay_metadata
 
 Side = Literal[1, 2]

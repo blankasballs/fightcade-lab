@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from fightcade_analysis.eval_layer2 import CHAR_NAMES
+from fightcade_analysis.characters import CHAR_NAMES, PRETTY_CHAR_NAMES, pretty_char
 from fightcade_analysis.features import extract_player_features
 from fightcade_analysis.index import (
     HierarchicalContextIndex,
@@ -26,17 +26,6 @@ from fightcade_analysis.index import (
     load_or_build_corpus,
 )
 from fightcade_analysis.segmentation import SegmentationConfig, extract_decision_points
-
-PRETTY_CHAR_NAMES: dict[int, str] = {
-    0: "Gill", 1: "Alex", 2: "Ryu", 3: "Yun", 4: "Dudley", 5: "Necro",
-    6: "Hugo", 7: "Ibuki", 8: "Elena", 9: "Oro", 10: "Yang", 11: "Ken",
-    12: "Sean", 13: "Urien", 14: "Akuma", 15: "Gill", 16: "Chun-Li",
-    17: "Makoto", 18: "Q", 19: "Twelve", 20: "Remy",
-}
-
-
-def pretty_char(char_id: int) -> str:
-    return PRETTY_CHAR_NAMES.get(int(char_id), CHAR_NAMES.get(int(char_id), f"Char#{int(char_id)}"))
 
 
 def describe_decision_point(row: pd.Series | dict[str, Any]) -> dict[str, str]:

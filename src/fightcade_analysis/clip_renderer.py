@@ -24,7 +24,6 @@ import threading
 import time
 import uuid
 
-import imageio_ffmpeg
 import numpy as np
 import pandas as pd
 
@@ -35,6 +34,7 @@ from fightcade_analysis.env_config import (
     build_fbneo_cmdline,
     discover_grouflon_dir,
     ensure_fbneo_config_inheritance,
+    require_local_ffmpeg,
     resolve_default_fast_fbneo_exe,
     resolve_default_fbneo_exe,
 )
@@ -190,13 +190,14 @@ def build_ffmpeg_rgb24_cmd(
     gop_size: int | None = None,
     input_path: str = "-",
     ffmpeg_exe: str | None = None,
+    data_dir: Path = DEFAULT_DATA_DIR,
 ) -> tuple[list[str], int, int]:
     """Build ffmpeg command list for encoding raw RGB24 video to crisp H.264 MP4 (4:3 DAR).
 
     When `scale == 1`, encodes at native pixel-art resolution (`384x224`) without an extra
     swscale pass so the browser scales cleanly with `image-rendering: pixelated`.
     """
-    eff_ffmpeg = ffmpeg_exe or imageio_ffmpeg.get_ffmpeg_exe()
+    eff_ffmpeg = ffmpeg_exe or require_local_ffmpeg(data_dir)
     s = max(1, int(scale))
     out_w = int(width) * s
     out_h = int(height) * s

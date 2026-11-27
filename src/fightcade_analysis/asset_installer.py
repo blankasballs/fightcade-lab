@@ -27,6 +27,8 @@ from fightcade_analysis.env_config import (
     DEFAULT_DATA_DIR,
     inspect_environment,
     load_app_config,
+    require_local_ffmpeg,
+    resolve_local_ffmpeg,
     save_app_config,
 )
 from fightcade_analysis.fetch_replays import DEFAULT_UA
@@ -36,8 +38,10 @@ from fightcade_analysis.uri_scheme import is_uri_scheme_registered
 FAST_FBNEO_RELEASES_API = "https://api.github.com/repos/blankasballs/fightcade-fbneo-fast/releases/latest"
 FAST_FBNEO_DOWNLOAD_PREFIX = "https://github.com/blankasballs/fightcade-fbneo-fast/releases/download/"
 FFMPEG_DEFAULT_RELEASE_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+FFMPEG_DEFAULT_SHA256_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256"
 
 _SHA256_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(.+)$")
+_SHA256_HEX_RE = re.compile(r"\b([0-9a-fA-F]{64})\b")
 
 
 def _require_https_url(url: str, *, allowed_prefix: str | None = None, label: str = "URL") -> str:
@@ -250,23 +254,12 @@ def install_fast_fbneo(
     }
 
 
-def resolve_local_ffmpeg(data_dir: Path = DEFAULT_DATA_DIR) -> Path | None:
-    """Locate `ffmpeg.exe` in local Companion tools dir, `PATH`, or `imageio-ffmpeg`."""
-    local_bin = data_dir.resolve() / "tools" / "ffmpeg.exe"
-    if local_bin.is_file():
-        return local_bin
-    on_path = shutil.which("ffmpeg")
-    if on_path:
-        return Path(on_path).resolve()
-    try:
-        import imageio_ffmpeg
-
-        p = Path(imageio_ffmpeg.get_ffmpeg_exe())
-        if p.is_file():
-            return p.resolve()
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+def _parse_single_sha256(text: str) -> str:
+    """Parse a 64-char hex SHA-256 checksum from a `.sha256` response body."""
+    m = _SHA256_HEX_RE.search(str(text or "").strip())
+    if not m:
+        raise ValueError("Could not parse a valid 64-char hex SHA-256 digest from checksum response")
+    return m.group(1).lower()
 
 
 def install_ffmpeg_from_zip(
@@ -274,24 +267,55 @@ def install_ffmpeg_from_zip(
     *,
     consent: bool = False,
     zip_url: str = FFMPEG_DEFAULT_RELEASE_URL,
-    expected_sha256: str,
+    expected_sha256: str | None = None,
+    sha256_url: str | None = None,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
-    """Consent-gated SHA-256 verified extraction of upstream `ffmpeg.exe` (GPL-3.0) into `data/tools/`."""
+    """Consent-gated SHA-256 verified extraction of upstream `ffmpeg.exe` (GPL-3.0) into `data/tools/`.
+
+    When `expected_sha256` is omitted, fetches `<zip_url>.sha256` over HTTPS and verifies the archive
+    against the published 64-hex SHA-256 checksum before extracting `ffmpeg.exe` and `LICENSE`.
+    """
     if not consent:
         raise PermissionError("Explicit user consent is required before downloading external ffmpeg.exe")
+    zip_url = _require_https_url(zip_url, label="FFmpeg zip URL")
+    sess = session or requests.Session()
+
+    eff_sha = expected_sha256
+    if not eff_sha:
+        checksum_url = _require_https_url(
+            sha256_url or (FFMPEG_DEFAULT_SHA256_URL if zip_url == FFMPEG_DEFAULT_RELEASE_URL else f"{zip_url}.sha256"),
+            label="FFmpeg SHA-256 URL",
+        )
+        sha_resp = sess.get(checksum_url, headers={"User-Agent": DEFAULT_UA}, timeout=20.0)
+        if sha_resp.status_code != 200:
+            raise RuntimeError(f"Could not fetch FFmpeg SHA-256 checksum (HTTP {sha_resp.status_code})")
+        eff_sha = _parse_single_sha256(sha_resp.text)
+
     tools_dir = data_dir.resolve() / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
     archive_path = tools_dir / "ffmpeg_download.zip"
-    dl = download_verified_asset(zip_url, archive_path, expected_sha256=expected_sha256, session=session)
+    dl = download_verified_asset(zip_url, archive_path, expected_sha256=eff_sha, session=sess)
     extracted_exe = tools_dir / "ffmpeg.exe"
+    license_installed = False
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
-            target_member = next((m for m in zf.namelist() if m.lower().endswith("/ffmpeg.exe") or m.lower() == "ffmpeg.exe"), None)
+            names = zf.namelist()
+            target_member = next((m for m in names if m.lower().endswith("/ffmpeg.exe") or m.lower() == "ffmpeg.exe"), None)
             if not target_member:
                 raise RuntimeError("Downloaded archive does not contain ffmpeg.exe")
             with zf.open(target_member) as src, extracted_exe.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
+
+            lic_member = next(
+                (m for m in names if Path(m).name.lower() in ("license", "license.txt") and not m.endswith("/")),
+                None,
+            )
+            if lic_member:
+                lic_dst = tools_dir / "ffmpeg_LICENSE.txt"
+                with zf.open(lic_member) as src, lic_dst.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                license_installed = True
     finally:
         archive_path.unlink(missing_ok=True)
 
@@ -300,7 +324,25 @@ def install_ffmpeg_from_zip(
         "path": str(extracted_exe),
         "archive_sha256": dl["sha256"],
         "exe_sha256": compute_file_sha256(extracted_exe),
+        "license_installed": license_installed,
     }
+
+
+def install_ffmpeg_latest(
+    data_dir: Path = DEFAULT_DATA_DIR,
+    *,
+    consent: bool = False,
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """Consent-gated download and SHA-256 verified install of the latest upstream FFmpeg Essentials build."""
+    return install_ffmpeg_from_zip(
+        data_dir,
+        consent=consent,
+        zip_url=FFMPEG_DEFAULT_RELEASE_URL,
+        expected_sha256=None,
+        sha256_url=FFMPEG_DEFAULT_SHA256_URL,
+        session=session,
+    )
 
 
 def get_onboarding_status(data_dir: Path = DEFAULT_DATA_DIR) -> dict[str, Any]:

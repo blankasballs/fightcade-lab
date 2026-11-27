@@ -60,7 +60,6 @@ from fightcade_analysis.focus_goals import (
     update_focus_goal,
 )
 from fightcade_analysis.gemini_summary import load_gemini_api_key
-from fightcade_analysis.insights import InsightJobRunner, ProSearchService, get_insight_report, list_insights
 from fightcade_analysis.match_catalog import (
     HourlyBackfillCapError,
     ProcessingQueue,
@@ -98,7 +97,12 @@ from fightcade_analysis.select_queue import (
     update_queue_item,
     update_queue_item_status,
 )
-from fightcade_analysis.asset_installer import get_onboarding_status, install_fast_fbneo, update_onboarding_state
+from fightcade_analysis.asset_installer import (
+    get_onboarding_status,
+    install_fast_fbneo,
+    install_ffmpeg_latest,
+    update_onboarding_state,
+)
 from fightcade_analysis.byoc_r2 import (
     ByocCloudAuthError,
     ByocError,
@@ -415,8 +419,8 @@ def make_handler(
     match_watcher: LiveMatchWatcher | None = None,
     response_watcher: TakeoverExportWatcher | None = None,
     processing_queue: ProcessingQueue | None = None,
-    insight_runner: InsightJobRunner | None = None,
-    pro_search_service: ProSearchService | None = None,
+    insight_runner: Any | None = None,
+    pro_search_service: Any | None = None,
     capabilities_fn: Callable[[], dict[str, Any]] | None = None,
     refresh_history_fn: Callable[..., dict[str, Any]] = refresh_match_history,
     bake_drill_fn: Callable[..., dict[str, Any]] | None = None,
@@ -440,14 +444,29 @@ def make_handler(
         data_dir=data_root,
         is_live_match_fn=watcher.is_in_match,
     )
-    ins_runner = insight_runner or InsightJobRunner(
-        data_dir=data_root,
-        is_live_match_fn=watcher.is_in_match,
-    )
-    pro_svc = pro_search_service or ProSearchService(
-        data_dir=data_root,
-        is_live_match_fn=watcher.is_in_match,
-    )
+    ins_runner_ref: list[Any | None] = [insight_runner]
+    pro_svc_ref: list[Any | None] = [pro_search_service]
+
+    def _get_ins_runner() -> Any:
+        if ins_runner_ref[0] is None:
+            from fightcade_analysis.insights import InsightJobRunner
+
+            ins_runner_ref[0] = InsightJobRunner(
+                data_dir=data_root,
+                is_live_match_fn=watcher.is_in_match,
+            )
+        return ins_runner_ref[0]
+
+    def _get_pro_svc() -> Any:
+        if pro_svc_ref[0] is None:
+            from fightcade_analysis.insights import ProSearchService
+
+            pro_svc_ref[0] = ProSearchService(
+                data_dir=data_root,
+                is_live_match_fn=watcher.is_in_match,
+            )
+        return pro_svc_ref[0]
+
     get_caps = capabilities_fn or (
         lambda: compute_capabilities(
             data_root,
@@ -464,7 +483,8 @@ def make_handler(
     server_pid = os.getpid()
 
     def _combined_jobs() -> list[dict[str, Any]]:
-        jobs = list(proc_queue.list_jobs()) + list(ins_runner.list_jobs())
+        ins_jobs = list(ins_runner_ref[0].list_jobs()) if ins_runner_ref[0] is not None else []
+        jobs = list(proc_queue.list_jobs()) + ins_jobs
         jobs.sort(key=lambda j: str(j.get("updated_at") or ""), reverse=True)
         return jobs[:50]
 
@@ -867,6 +887,8 @@ def make_handler(
                 nc = notes_res.get("counts") or {}
                 latest_insight = None
                 if _is_pro_corpus_allowed():
+                    from fightcade_analysis.insights import list_insights
+
                     ins_res = list_insights(data_root, include_legacy=False)
                     lv = ins_res.get("latest_verified_habits")
                     if lv:
@@ -1028,6 +1050,8 @@ def make_handler(
                     return
                 inc_raw = (qs.get("include_legacy") or ["0"])[0].strip().lower()
                 inc_legacy = inc_raw in ("1", "true", "yes")
+                from fightcade_analysis.insights import list_insights
+
                 res = list_insights(data_root, include_legacy=inc_legacy)
                 self._send_json(HTTPStatus.OK, res)
                 return
@@ -1048,6 +1072,8 @@ def make_handler(
                     return
                 rid = m_ins.group(1)
                 try:
+                    from fightcade_analysis.insights import get_insight_report
+
                     res = get_insight_report(rid, data_dir=data_root)
                 except ValueError as exc:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -1282,6 +1308,18 @@ def make_handler(
                         return
                     self._send_json(HTTPStatus.OK, {"ok": True, "install": res, "onboarding": get_onboarding_status(data_root)})
                     return
+                if action == "install_ffmpeg":
+                    consent = bool(payload.get("consent", False))
+                    try:
+                        res = install_ffmpeg_latest(data_root, consent=consent)
+                    except PermissionError as exc:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                        return
+                    except Exception as exc:  # noqa: BLE001
+                        self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": str(exc)})
+                        return
+                    self._send_json(HTTPStatus.OK, {"ok": True, "install": res, "onboarding": get_onboarding_status(data_root)})
+                    return
                 self._send_json(HTTPStatus.OK, update_onboarding_state(payload, data_root))
                 return
 
@@ -1430,7 +1468,7 @@ def make_handler(
                     self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "perspective must be 1 or 2"})
                     return
                 try:
-                    job = ins_runner.enqueue(kind=kind, quark_id=qid, perspective=persp, username=uname)
+                    job = _get_ins_runner().enqueue(kind=kind, quark_id=qid, perspective=persp, username=uname)
                 except ValueError as exc:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                     return
@@ -1582,7 +1620,7 @@ def make_handler(
                     )
                     return
                 try:
-                    res = pro_svc.search(
+                    res = _get_pro_svc().search(
                         quark_id=str(payload.get("quark_id") or ""),
                         perspective=int(payload.get("perspective", 1)),
                         start_gf=int(payload.get("start_gf", 0)),
@@ -1615,7 +1653,7 @@ def make_handler(
                     )
                     return
                 try:
-                    res = pro_svc.render_clip(
+                    res = _get_pro_svc().render_clip(
                         quark_id=str(payload.get("quark_id") or ""),
                         frame=int(payload.get("frame", 0)),
                         label=str(payload.get("label") or ""),
@@ -2037,8 +2075,8 @@ def create_server(
     match_watcher: LiveMatchWatcher | None = None,
     response_watcher: TakeoverExportWatcher | None = None,
     processing_queue: ProcessingQueue | None = None,
-    insight_runner: InsightJobRunner | None = None,
-    pro_search_service: ProSearchService | None = None,
+    insight_runner: Any | None = None,
+    pro_search_service: Any | None = None,
     capabilities_fn: Callable[[], dict[str, Any]] | None = None,
     refresh_history_fn: Callable[..., dict[str, Any]] = refresh_match_history,
     bake_drill_fn: Callable[..., dict[str, Any]] | None = None,
@@ -2107,8 +2145,13 @@ def main(argv: list[str] | None = None) -> int:
     response_watcher = TakeoverExportWatcher(data_dir=args.data_dir)
     proc_queue = ProcessingQueue(data_dir=args.data_dir, is_live_match_fn=watcher.is_in_match)
     proc_queue_holder.append(proc_queue)
-    ins_runner = InsightJobRunner(data_dir=args.data_dir, is_live_match_fn=watcher.is_in_match)
-    pro_svc = ProSearchService(data_dir=args.data_dir, is_live_match_fn=watcher.is_in_match)
+    ins_runner: Any | None = None
+    pro_svc: Any | None = None
+    if is_pro_corpus_opt_in(args.data_dir):
+        from fightcade_analysis.insights import InsightJobRunner, ProSearchService
+
+        ins_runner = InsightJobRunner(data_dir=args.data_dir, is_live_match_fn=watcher.is_in_match)
+        pro_svc = ProSearchService(data_dir=args.data_dir, is_live_match_fn=watcher.is_in_match)
 
     try:
         server = create_server(
@@ -2159,7 +2202,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Select-Mark Watcher: ACTIVE (tap Select/Coin during live matches{auto_str})")
 
     def _is_busy() -> bool:
-        if proc_queue.has_running_job() or ins_runner.has_running_job() or response_watcher.is_busy():
+        ins_running = bool(ins_runner is not None and ins_runner.has_running_job())
+        if proc_queue.has_running_job() or ins_running or response_watcher.is_busy():
             return True
         phase = str(watcher.status().get("phase") or "")
         return phase in ("scanning", "waiting_replay")
@@ -2180,7 +2224,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         reload_watcher.stop()
         response_watcher.stop()
-        ins_runner.stop()
+        if ins_runner is not None:
+            ins_runner.stop()
         proc_queue.stop()
         watcher.stop()
         server.server_close()

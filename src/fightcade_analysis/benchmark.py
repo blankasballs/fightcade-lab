@@ -19,7 +19,6 @@ import tempfile
 import time
 from typing import Any
 
-import imageio_ffmpeg
 import pandas as pd
 
 from fightcade_analysis.clip_renderer import (
@@ -29,6 +28,7 @@ from fightcade_analysis.clip_renderer import (
     find_parquet_for_quark,
     resolve_capture_fbneo_exe,
 )
+from fightcade_analysis.env_config import require_local_ffmpeg
 from fightcade_analysis.round_renderer import (
     list_cached_round_savestates,
     render_round_mp4,
@@ -58,7 +58,7 @@ def _git_short_head() -> str:
 
 def probe_video_streams(mp4_path: Path, *, ffmpeg_exe: str | None = None) -> dict[str, Any]:
     """Inspect an MP4 using ffmpeg stderr header (no ffprobe binary required)."""
-    ff = ffmpeg_exe or imageio_ffmpeg.get_ffmpeg_exe()
+    ff = ffmpeg_exe or require_local_ffmpeg()
     res = subprocess.run(
         [ff, "-hide_banner", "-i", str(mp4_path)],
         capture_output=True,

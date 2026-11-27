@@ -33,7 +33,7 @@ import pandas as pd
 
 from fightcade_analysis.annotations import get_set_notes_map, list_annotations
 from fightcade_analysis.clip_renderer import DEFAULT_DATA_DIR, find_parquet_for_quark
-from fightcade_analysis.coaching import pretty_char
+from fightcade_analysis.characters import pretty_char
 from fightcade_analysis.fetch_replays import FightcadeRateLimitError, fetch_quarks, summarize_quark
 from fightcade_analysis.naming import format_rank_letter, lookup_replay_metadata
 from fightcade_analysis.perspective import (

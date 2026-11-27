@@ -20,9 +20,57 @@ import shutil
 import sys
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATA_DIR = REPO_ROOT / "data"
+def is_frozen_runtime() -> bool:
+    """Return True when running inside a frozen/Nuitka standalone Windows executable."""
+    return bool(getattr(sys, "frozen", False) or ("__compiled__" in globals()))
+
+
+def resolve_app_root() -> Path:
+    """Resolve the application root directory (containing `lua/`, `web/`, `LICENSE`, etc.).
+
+    In a frozen Nuitka standalone install (`%LOCALAPPDATA%\\FightcadeLab\\FightcadeLabCompanion.exe`),
+    returns the directory containing `sys.executable`. In a source checkout, returns the repo root.
+    """
+    if is_frozen_runtime():
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+def resolve_default_data_dir() -> Path:
+    """Resolve the default per-user writable `data/` directory."""
+    return resolve_app_root() / "data"
+
+
+REPO_ROOT = resolve_app_root()
+DEFAULT_DATA_DIR = resolve_default_data_dir()
 DEFAULT_DISK_CACHE_CAP_GB: float = 5.0
+
+
+def resolve_local_ffmpeg(data_dir: Path = DEFAULT_DATA_DIR) -> Path | None:
+    """Locate `ffmpeg.exe` in local Companion tools dir, `PATH`, or optional `imageio-ffmpeg`."""
+    local_bin = data_dir.resolve() / "tools" / "ffmpeg.exe"
+    if local_bin.is_file():
+        return local_bin
+    on_path = shutil.which("ffmpeg")
+    if on_path:
+        return Path(on_path).resolve()
+    try:
+        import imageio_ffmpeg
+
+        p = Path(imageio_ffmpeg.get_ffmpeg_exe())
+        if p.is_file():
+            return p.resolve()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def require_local_ffmpeg(data_dir: Path = DEFAULT_DATA_DIR) -> str:
+    """Return the path string to a usable `ffmpeg` binary or raise an actionable `FileNotFoundError`."""
+    found = resolve_local_ffmpeg(data_dir)
+    if found is not None:
+        return str(found)
+    raise FileNotFoundError("ffmpeg.exe not found. Download it from the Fightcade Lab Setup Wizard.")
 
 _ROM_PATH_RE = re.compile(r"^\s*szAppRomPaths\[(\d+)\]\s*(.*)$")
 _STREAM_TARGET_RE = re.compile(r"^quark:stream,[a-z0-9_-]{2,32},[A-Za-z0-9_-]{3,64}\.[0-9]{1,4},[0-9]{2,5}$")
@@ -142,7 +190,7 @@ def is_pro_corpus_opt_in(data_dir: Path = DEFAULT_DATA_DIR, *, env_path: Path | 
 
     Packaged/frozen public Companion builds (`FC_PACKAGED_COMPANION=1`) ALWAYS return False.
     """
-    if getattr(sys, "frozen", False) or _parse_bool_flag(os.environ.get("FC_PACKAGED_COMPANION")) is True:
+    if is_frozen_runtime() or _parse_bool_flag(os.environ.get("FC_PACKAGED_COMPANION")) is True:
         return False
 
     env_flag = _parse_bool_flag(os.environ.get("FC_ENABLE_PRO_CORPUS"))
@@ -647,6 +695,7 @@ def inspect_environment(
     rom_file, rom_dirs = find_rom_file(game_id, fbneo_dir=fb_dir, data_dir=data_dir)
     ctrl_ini = (fb_dir / "config" / "games" / f"{game_id}.ini") if fb_dir is not None else None
     g_dir = discover_grouflon_dir(stock_exe, data_dir=data_dir)
+    ffmpeg_path = resolve_local_ffmpeg(data_dir=data_dir)
 
     return {
         "fightcade_dir": str(fc_dir) if fc_dir else None,
@@ -654,6 +703,8 @@ def inspect_environment(
         "fbneo_found": bool(stock_exe.is_file() or fast_exe.is_file()),
         "stock_fbneo_found": bool(stock_exe.is_file()),
         "fast_fbneo_found": bool(fast_exe.is_file()),
+        "ffmpeg_found": ffmpeg_path is not None,
+        "ffmpeg_path": str(ffmpeg_path) if ffmpeg_path else None,
         "rom_found": rom_file is not None,
         "rom_path": str(rom_file) if rom_file else None,
         "rom_search_paths": [str(p) for p in rom_dirs[:6]],

@@ -10,8 +10,21 @@ import json
 from pathlib import Path
 
 from fightcade_analysis.annotations import PRESET_TAGS
+from fightcade_analysis.env_config import REPO_ROOT
 
-WEB_ASSETS_DIR = Path(__file__).resolve().parent / "web"
+
+def resolve_web_assets_dir() -> Path:
+    """Resolve static web assets in both source checkouts and Nuitka frozen installs."""
+    local_web = Path(__file__).resolve().parent / "web"
+    if (local_web / "index.html").is_file():
+        return local_web
+    app_web = REPO_ROOT / "web"
+    if (app_web / "index.html").is_file():
+        return app_web
+    return local_web
+
+
+WEB_ASSETS_DIR = resolve_web_assets_dir()
 
 
 def build_pwa_manifest_json() -> str:

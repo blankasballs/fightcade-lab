@@ -22,13 +22,13 @@ import subprocess
 from typing import Any
 import uuid
 
-import imageio_ffmpeg
 import numpy as np
 import requests
 
 from fightcade_analysis.annotations import get_annotation, update_annotation
 from fightcade_analysis.clip_renderer import DEFAULT_DATA_DIR
 from fightcade_analysis.companion_bridge import get_cloud_base_url, get_cloud_token
+from fightcade_analysis.env_config import require_local_ffmpeg
 from fightcade_analysis.fetch_replays import DEFAULT_UA
 from fightcade_analysis.naming import lookup_replay_metadata
 from fightcade_analysis.perspective import normalize_side
@@ -159,9 +159,10 @@ def build_share_clip_ffmpeg_cmd(
     duration_s: float,
     crf: int = 26,
     ffmpeg_exe: str | None = None,
+    data_dir: Path = DEFAULT_DATA_DIR,
 ) -> list[str]:
     """Build ffmpeg command that trims `[start_s, start_s+duration_s]` and stamps 4:3 DAR + 7:9 SAR."""
-    eff_ffmpeg = ffmpeg_exe or imageio_ffmpeg.get_ffmpeg_exe()
+    eff_ffmpeg = ffmpeg_exe or require_local_ffmpeg(data_dir)
     vf = (
         f"scale={SHARE_CLIP_WIDTH}:{SHARE_CLIP_HEIGHT}:flags=neighbor,"
         f"setsar={SHARE_CLIP_SAR},setdar=4/3"
@@ -212,10 +213,11 @@ def extract_share_clip_mp4(
     crf: int = 26,
     max_bytes: int = MAX_SHARE_CLIP_BYTES,
     ffmpeg_exe: str | None = None,
+    data_dir: Path = DEFAULT_DATA_DIR,
 ) -> dict[str, Any]:
     """Encode trimmed share clip MP4 with 4:3 DAR/SAR, auto-adjusting CRF if needed to stay <= 4 MB."""
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
-    eff_ffmpeg = ffmpeg_exe or imageio_ffmpeg.get_ffmpeg_exe()
+    eff_ffmpeg = ffmpeg_exe or require_local_ffmpeg(data_dir)
     crf_ladder = [int(crf)] + [c for c in (29, 32, 35) if c > int(crf)]
 
     last_size = 0
@@ -269,9 +271,10 @@ def render_hitbox_thumb_jpg(
     src_w: int = 384,
     src_h: int = 224,
     ffmpeg_exe: str | None = None,
+    data_dir: Path = DEFAULT_DATA_DIR,
 ) -> int:
     """Extract anchor frame at `offset_s`, burn Grouflon hitboxes onto RGB24 pixels, and encode `thumb.jpg`."""
-    eff_ffmpeg = ffmpeg_exe or imageio_ffmpeg.get_ffmpeg_exe()
+    eff_ffmpeg = ffmpeg_exe or require_local_ffmpeg(data_dir)
     out_jpg.parent.mkdir(parents=True, exist_ok=True)
 
     decode_cmd = [
@@ -427,6 +430,7 @@ def prepare_share_bundle(
         duration_s=duration_s,
         crf=crf,
         ffmpeg_exe=ffmpeg_exe,
+        data_dir=data_root,
     )
 
     # 2. overlay.json.gz sliced strictly to [eff_start .. eff_end]
@@ -459,6 +463,7 @@ def prepare_share_bundle(
         src_w=int(ov_slice.get("w") or 384),
         src_h=int(ov_slice.get("h") or 224),
         ffmpeg_exe=ffmpeg_exe,
+        data_dir=data_root,
     )
 
     total_bytes = int(clip_info["size_bytes"]) + int(overlay_bytes) + int(thumb_bytes)

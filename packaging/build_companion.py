@@ -33,6 +33,7 @@ EXCLUDED_PUBLIC_ITEMS: tuple[str, ...] = (
 # Minimal Lua scripts required for Replay Review, Select Marks & Takeover
 COMPANION_LUA_FILES: tuple[str, ...] = (
     "sfiii3nr1_map.lua",
+    "sfiii3nr1_overlay.lua",
     "dump_telemetry.lua",
     "capture_clip.lua",
     "capture_select_marks.lua",
@@ -130,6 +131,7 @@ def write_sha256sums(dist_dir: Path, artifact_names: list[str]) -> Path:
 
 def build_nuitka(output_dir: Path, *, dry_run: bool = False) -> list[str]:
     entry = write_entrypoint_stub(output_dir / "_companion_main.py")
+    favicon_ico = REPO_ROOT / "src" / "fightcade_analysis" / "web" / "favicon.ico"
     cmd = [
         sys.executable,
         "-m",
@@ -146,8 +148,10 @@ def build_nuitka(output_dir: Path, *, dry_run: bool = False) -> list[str]:
         "--nofollow-import-to=sklearn",
         "--nofollow-import-to=matplotlib",
         "--nofollow-import-to=imageio_ffmpeg",
-        str(entry),
     ]
+    if favicon_ico.is_file():
+        cmd.append(f"--windows-icon-from-ico={favicon_ico}")
+    cmd.append(str(entry))
     if not dry_run:
         subprocess.run(cmd, check=True, cwd=str(REPO_ROOT))
         standalone_dir = output_dir / "_companion_main.dist"

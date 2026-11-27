@@ -19,7 +19,8 @@ from typing import Any
 
 import requests
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from fightcade_analysis.env_config import REPO_ROOT
+
 DEFAULT_ENV_PATH = REPO_ROOT / ".env"
 DEFAULT_MODEL_CHAIN: tuple[str, ...] = (
     "gemini-3-flash-preview",

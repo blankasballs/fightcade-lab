@@ -29,7 +29,8 @@ import webbrowser
 from typing import Any
 
 from fightcade_analysis.companion_bridge import fetch_remote_companion_config
-from fightcade_analysis.env_config import DEFAULT_DATA_DIR
+from fightcade_analysis.env_config import DEFAULT_DATA_DIR, is_frozen_runtime
+from fightcade_analysis.mobile_ui import WEB_ASSETS_DIR
 from fightcade_analysis.server import DEFAULT_HOST, DEFAULT_PORT, create_server
 from fightcade_analysis.uri_scheme import (
     dispatch_companion_uri,
@@ -59,7 +60,7 @@ def configure_companion_logging(data_dir: Path = DEFAULT_DATA_DIR) -> Path:
 
 
 def build_startup_command() -> str:
-    if getattr(sys, "frozen", False):
+    if is_frozen_runtime():
         return f'"{Path(sys.executable).resolve()}"'
     py_exe = Path(sys.executable).resolve()
     pyw = py_exe.with_name("pythonw.exe")
@@ -124,6 +125,33 @@ MF_SEPARATOR = 0x00000800
 TPM_LEFTALIGN = 0x0000
 TPM_BOTTOMALIGN = 0x0020
 IDI_APPLICATION = 32512
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x00000010
+LR_DEFAULTSIZE = 0x00000040
+
+
+def _load_tray_icon(user32: Any, icon_path: Path | None = None) -> tuple[Any, bool]:
+    """Load `favicon.ico` via Win32 `LoadImageW`, falling back cleanly to `IDI_APPLICATION`."""
+    ico = icon_path or (WEB_ASSETS_DIR / "favicon.ico")
+    try:
+        if ico.is_file():
+            user32.LoadImageW.argtypes = [
+                wintypes.HINSTANCE,
+                wintypes.LPCWSTR,
+                wintypes.UINT,
+                ctypes.c_int,
+                ctypes.c_int,
+                wintypes.UINT,
+            ]
+            user32.LoadImageW.restype = wintypes.HANDLE
+            hicon = user32.LoadImageW(None, str(ico), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+            if hicon:
+                return hicon, True
+    except Exception:  # noqa: BLE001
+        pass
+    user32.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
+    user32.LoadIconW.restype = wintypes.HICON
+    return user32.LoadIconW(None, ctypes.cast(IDI_APPLICATION, wintypes.LPCWSTR)), False
 
 CMD_OPEN = 1001
 CMD_TOGGLE_WATCHER = 1002
@@ -336,13 +364,14 @@ class CompanionTrayController:
         hwnd = user32.CreateWindowExW(0, cls_name, "Fightcade Lab Companion", 0, 0, 0, 0, 0, 0, 0, hinst, None)
         hwnd_ref[0] = hwnd
 
+        hicon, owns_icon = _load_tray_icon(user32)
         nid = _NOTIFYICONDATAW()
         nid.cbSize = ctypes.sizeof(_NOTIFYICONDATAW)
         nid.hWnd = hwnd
         nid.uID = 1
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
         nid.uCallbackMessage = WM_TRAYICON
-        nid.hIcon = user32.LoadIconW(None, ctypes.cast(IDI_APPLICATION, wintypes.LPCWSTR))
+        nid.hIcon = hicon
         nid.szTip = "Fightcade Lab Companion (127.0.0.1)"
         shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid))
 
@@ -353,6 +382,12 @@ class CompanionTrayController:
                 user32.DispatchMessageW(ctypes.byref(msg_struct))
         finally:
             shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))
+            if owns_icon and hicon:
+                try:
+                    user32.DestroyIcon.argtypes = [wintypes.HICON]
+                    user32.DestroyIcon(hicon)
+                except Exception:  # noqa: BLE001
+                    pass
             self.stop_backend()
         return 0
 
