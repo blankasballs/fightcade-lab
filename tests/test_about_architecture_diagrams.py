@@ -24,7 +24,7 @@ APP_JS = WEB_DIR / "js" / "app.js"
 
 def _extract_about_decentralized(html: str) -> str:
     start = html.index('<div id="aboutDecentralized"')
-    end = html.index("<h2>Credits</h2>", start)
+    end = html.index('<div class="about-links">', start)
     return html[start:end]
 
 

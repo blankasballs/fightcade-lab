@@ -46,7 +46,7 @@ def test_about_view_nav_footer_and_zero_em_dashes():
     assert "onclick=\"navigateTo('about')\">About</button>" in footer_links
     assert footer_links.index("navigateTo('about')") < footer_links.index("Feedback / Bug Report")
 
-    # #viewAbout exists with banner, all 4 sections, links, and ZERO em dashes
+    # #viewAbout exists with banner, sections, links, no Credits section, and ZERO em dashes
     about_start = html.index('<section id="viewAbout"')
     about_end = html.index("</section>", about_start)
     about_html = html[about_start:about_end]
@@ -65,7 +65,8 @@ def test_about_view_nav_footer_and_zero_em_dashes():
     assert "Why I built this" in about_html
     assert "Free as in beer, free as in speech" in about_html
     assert "Local-first and respectful of Fightcade" in about_html
-    assert "Credits" in about_html
+    assert "<h2>Credits</h2>" not in about_html
+    assert "Credits" not in about_html
     assert "https://github.com/blankasballs/fightcade-lab" in about_html
     assert "https://github.com/blankasballs/fightcade-lab/issues" in about_html
     assert "openTermsModal()" in about_html

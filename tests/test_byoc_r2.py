@@ -443,7 +443,7 @@ def test_about_decentralized_explainer_hosted_funnel_and_byoc_ui():
     assert 'id="byocModal"' in html
 
     dec_start = html.index('<div id="aboutDecentralized"')
-    dec_end = html.index("<h2>Credits</h2>", dec_start)
+    dec_end = html.index('<div class="about-links">', dec_start)
     dec_html = html[dec_start:dec_end]
     assert "—" not in dec_html and "&mdash;" not in dec_html.lower()
     assert "How it stays free (decentralized by design)" in dec_html
