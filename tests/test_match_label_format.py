@@ -62,6 +62,7 @@ process.stdout.write(JSON.stringify(out));
         env={**os.environ, "STATE_JS_PATH": str(STATE_JS), "TEST_JS": js_body},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
         timeout=15,
     )

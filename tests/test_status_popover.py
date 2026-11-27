@@ -118,6 +118,7 @@ process.stdout.write(JSON.stringify(out));
         },
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
         timeout=15,
     )

@@ -325,7 +325,7 @@ const out = vm.runInContext(`(function() {{
 
 process.stdout.write(JSON.stringify(out));
 """
-    proc = subprocess.run([node_bin, "-e", driver], capture_output=True, text=True, check=False, timeout=15)
+    proc = subprocess.run([node_bin, "-e", driver], capture_output=True, text=True, encoding="utf-8", check=False, timeout=15)
     assert proc.returncode == 0, f"Node test failed:\n{proc.stderr}"
     res = json.loads(proc.stdout)
 
