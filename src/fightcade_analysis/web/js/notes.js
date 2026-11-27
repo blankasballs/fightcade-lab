@@ -665,8 +665,27 @@ function renderHubNotes() {
   }
 
   const host = document.getElementById("notesHubList");
+  if (isHostedMode() && !state.auth.authenticated) {
+    if (host) {
+      host.innerHTML = `
+        <div class="card empty-card">
+          <p style="margin:0 auto 14px; max-width:460px; color:var(--muted); font-size:13.5px; line-height:1.5;">
+            Sign in with Discord to view your shared moments and playlists from any device.
+          </p>
+          <a class="btn-link primary sm" href="/api/auth/discord/start?next=%2F%23notes">Sign in with Discord</a>
+        </div>
+      `;
+    }
+    return;
+  }
   if (!filtered.length) {
-    host.innerHTML = `<div class="card empty-card">No notes match these filters yet. Pin moments inside Replay Studio!</div>`;
+    if (isHostedMode() && !state.hubNotes.length) {
+      host.innerHTML = `<div class="card empty-card">No shared moments in the cloud yet. Use Share Moment in the Windows Companion to publish clips here for mobile review and Discord sharing.</div>`;
+    } else if (isHostedMode()) {
+      host.innerHTML = `<div class="card empty-card">No shared moments match these filters.</div>`;
+    } else {
+      host.innerHTML = `<div class="card empty-card">No notes match these filters yet. Pin moments inside Replay Studio!</div>`;
+    }
     return;
   }
 

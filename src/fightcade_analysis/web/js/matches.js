@@ -63,7 +63,101 @@ function renderCharFilterControls() {
   document.getElementById("btnClearCharFilter").classList.toggle("hidden", !(state.selfCharFilter || state.oppCharFilter));
 }
 
+function renderHostedByocFunnel(isSignedIn) {
+  const host = document.getElementById("matchList");
+  if (!host) return;
+  const releasesHref = esc(safeHref(`${GITHUB_REPO_URL}/releases`));
+  const signInBtn = !isSignedIn
+    ? `<a class="btn-link primary sm" href="/api/auth/discord/start?next=%2F%23matches">Sign in with Discord</a>`
+    : "";
+  host.innerHTML = `
+    <div class="card byoc-funnel-card">
+      <div class="hero-eyebrow"><span class="dot"></span><span>MOBILE REPLAY SYNC (OPTIONAL · FREE)</span></div>
+      <h2 class="byoc-funnel-title">Watch your full matches on mobile</h2>
+      <p class="byoc-funnel-copy">
+        Full 60fps sets live on your PC by default, not on Fightcade Lab servers. Connect your own free Cloudflare R2 bucket (10 GB free, $0 video streaming) in the Windows Companion to review your recent sets right here from any phone, even when your PC is off.
+      </p>
+      <ol class="byoc-steps">
+        <li>Install and pair the free Windows Companion on your PC.</li>
+        <li>Open <strong>Desktop Companion -&gt; Mobile Replay Sync (R2)</strong> and connect your bucket.</li>
+        <li>Finish a Fightcade set and it appears right here automatically.</li>
+      </ol>
+      <div class="row" style="gap:8px; margin-top:14px;">
+        ${signInBtn}
+        <button type="button" class="sm" onclick="openAboutExplainer()">How this stays free →</button>
+        <a class="btn-link ${isSignedIn ? "primary " : ""}sm" href="${releasesHref}" target="_blank" rel="noopener">Download Windows Companion →</a>
+      </div>
+    </div>
+  `;
+}
+
+function _syncMatchesFilterChrome(hostedConnected) {
+  const filterCard = document.getElementById("matchesFilterCard")
+    || (typeof document !== "undefined" && document.querySelector ? document.querySelector("#viewMatches > .card") : null);
+  const userRow = document.getElementById("matchesUsernameRow");
+  const refreshRow = document.getElementById("matchesRefreshRow");
+  if (filterCard) filterCard.classList.remove("hidden");
+  if (userRow) userRow.classList.toggle("hidden", Boolean(hostedConnected));
+  if (refreshRow) refreshRow.classList.toggle("hidden", Boolean(hostedConnected));
+  if (typeof document !== "undefined" && document.querySelectorAll) {
+    document.querySelectorAll("#filterChips .chip").forEach(chip => {
+      const f = chip.dataset && chip.dataset.filter;
+      if (f === "ready" || f === "unprocessed") {
+        chip.classList.toggle("hidden", Boolean(hostedConnected));
+      }
+    });
+  }
+}
+
 async function loadMatches() {
+  const filterCard = document.getElementById("matchesFilterCard")
+    || (typeof document !== "undefined" && document.querySelector ? document.querySelector("#viewMatches > .card") : null);
+
+  if (isHostedMode()) {
+    if (!state.auth.authenticated) {
+      if (filterCard) filterCard.classList.add("hidden");
+      state.matches = [];
+      state.counts = {};
+      state.hostedByocConnected = false;
+      renderHostedByocFunnel(false);
+      return;
+    }
+
+    try {
+      const params = new URLSearchParams({ filter: state.filter === "unprocessed" ? "all" : state.filter });
+      if (state.selfCharFilter) params.set("self_char", state.selfCharFilter);
+      if (state.oppCharFilter) params.set("opp_char", state.oppCharFilter);
+      const data = await api(`/api/matches?${params.toString()}`);
+      state.matches = data.matches || [];
+      state.counts = data.counts || {};
+      state.availableChars = data.available_chars || { self: [], opp: [] };
+      state.lastRefreshed = data.last_refreshed || null;
+      state.hostedByocConnected = Boolean(data.byoc_connected);
+      state.hostedByocUsedBytes = Number(data.byoc_used_bytes || 0);
+      state.hostedByocCapGb = Number(data.byoc_cap_gb || 9.0);
+      if (data.byoc_bucket_name) state.hostedByocBucket = String(data.byoc_bucket_name);
+
+      if (!state.hostedByocConnected && !state.matches.length) {
+        if (filterCard) filterCard.classList.add("hidden");
+        renderHostedByocFunnel(true);
+        return;
+      }
+
+      _syncMatchesFilterChrome(true);
+      renderCharFilterControls();
+      renderMatchList();
+    } catch (err) {
+      state.matches = [];
+      state.counts = {};
+      if (filterCard) filterCard.classList.add("hidden");
+      renderHostedByocFunnel(true);
+      toast("Failed to load matches: " + err.message);
+    }
+    return;
+  }
+
+  _syncMatchesFilterChrome(false);
+
   const userEl = document.getElementById("usernameInput");
   const prevUser = state.username || "";
   const u = ((userEl && userEl.value) || state.username || DEFAULT_USER).trim();
@@ -100,6 +194,7 @@ async function loadMatches() {
 }
 
 async function refreshFromFightcade(loadOlder = false) {
+  if (isHostedMode()) return;
   const userEl = document.getElementById("usernameInput");
   const u = ((userEl && userEl.value) || state.username || DEFAULT_USER).trim();
   if (!u) return;
@@ -178,9 +273,17 @@ function renderMatchList() {
 
   const host = document.getElementById("matchList");
   if (!state.matches.length) {
-    host.innerHTML = `<div class="card empty-card">No matches in this filter. Tap <strong>Refresh</strong> to sync from Fightcade.</div>`;
+    if (isHostedMode() && state.hostedByocConnected) {
+      const bucketLabel = state.hostedByocBucket || "your R2 bucket";
+      host.innerHTML = `<div class="card empty-card">Connected to <strong>${esc(bucketLabel)}</strong>. Finish a match on your PC or click <strong>Sync Recent Sets</strong> in the Windows Companion.</div>`;
+    } else {
+      host.innerHTML = `<div class="card empty-card">No matches in this filter. Tap <strong>Refresh</strong> to sync from Fightcade.</div>`;
+    }
     return;
   }
+
+  const localByoc = (!isHostedMode() && state.capabilities && state.capabilities.byoc) ? state.capabilities.byoc : null;
+  const syncedSet = new Set((localByoc && Array.isArray(localByoc.synced_quark_ids)) ? localByoc.synced_quark_ids : []);
 
   host.innerHTML = state.matches.map(m => {
     const titleHtml = formatMatchLabelHtml(m, {
@@ -195,6 +298,12 @@ function renderMatchList() {
     const dur = m.duration_s > 0 ? `${Math.round(m.duration_s / 60)}m` : "";
     const statusBadge = statusBadgeHtml(m);
     const notePill = m.notes_count > 0 ? `<span class="pill note">📝 ${m.notes_count}</span>` : "";
+    let byocBadge = "";
+    if (localByoc && localByoc.connected && m.status === "ready") {
+      byocBadge = syncedSet.has(m.quark_id)
+        ? `<span class="pill cached" data-tip="Synced to your Cloudflare R2 bucket for mobile review">☁ Synced</span>`
+        : `<button type="button" class="pill" style="cursor:pointer;" data-tip="Upload this set to your Cloudflare R2 bucket for mobile review" onclick="triggerByocSyncNow(${escJsAttr(m.quark_id)}, this)">☁ Sync</button>`;
+    }
 
     let aiPill = "";
     if (m.has_report && m.report_url) {
@@ -203,7 +312,7 @@ function renderMatchList() {
       aiPill = `<button class="pill cached" style="cursor:pointer;" onclick="triggerMatchBreakdown(${escJsAttr(m.quark_id)}, ${Number(m.perspective || 1)})">✨ Run Breakdown</button>`;
     }
     const errPill = (m.job && m.job.state === "error") ? `<span class="pill err">Error: ${esc(m.job.error)}</span>` : "";
-    const badges = [statusBadge, notePill, aiPill, errPill].filter(Boolean);
+    const badges = [statusBadge, byocBadge, notePill, aiPill, errPill].filter(Boolean);
     const badgesHtml = badges.length ? `<div class="row match-badges">${badges.join("")}</div>` : "";
 
     let progHtml = "";

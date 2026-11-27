@@ -53,7 +53,14 @@ def test_about_view_nav_footer_and_zero_em_dashes():
 
     assert "—" not in about_html, "About page copy must contain zero em dashes"
     assert "&mdash;" not in about_html.lower()
-    assert "/assets/img/header-astro-lab.jpg" in about_html
+    assert "/assets/img/about-evo-moment37.jpg" in about_html
+    assert "EVO 2004 · Pomona, CA" in about_html
+    from PIL import Image
+    evo_banner = WEB_DIR / "img" / "about-evo-moment37.jpg"
+    assert evo_banner.is_file()
+    with Image.open(evo_banner) as im:
+        assert im.format == "JPEG"
+        assert im.size == (960, 707)
     assert "About Fightcade Lab" in about_html
     assert "Why I built this" in about_html
     assert "Free as in beer, free as in speech" in about_html
@@ -66,6 +73,9 @@ def test_about_view_nav_footer_and_zero_em_dashes():
     # Editorial styles & single-col pulse-grid present
     assert ".about-card {" in css
     assert ".about-banner-frame {" in css
+    banner_img_start = css.index(".about-banner-img {")
+    banner_img_end = css.index("}", banner_img_start)
+    assert "object-fit: contain" in css[banner_img_start:banner_img_end]
     assert ".pulse-grid.single-col {" in css
 
 

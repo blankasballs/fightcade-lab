@@ -40,12 +40,66 @@ function renderHomeWorkbench() {
 
   // ---- SECTION 1: LATEST MATCH HERO & FIRST-RUN WIZARD ----
   let heroHtml = "";
-  if (!latest) {
+  if (isHostedMode() && (!state.auth.authenticated || !latest)) {
+    const releasesHref = esc(safeHref(`${GITHUB_REPO_URL}/releases`));
+    if (!state.auth.authenticated) {
+      heroHtml = `
+        <div class="hero-card">
+          <div class="hero-welcome-grid">
+            <div>
+              <div class="hero-eyebrow"><span class="dot"></span><span>FIGHTCADE LAB</span></div>
+              <div class="hero-headline" style="font-size:22px;">3rd Strike replay review, matchup notes, and Replay Takeover.</div>
+              <div class="hero-meta">Full-match Replay Studio and Replay Takeover run locally in the free Windows Companion. Sign in here to access your shared clips, playlists, and coaching replies from any device.</div>
+              <div class="hero-actions">
+                <a class="btn-link primary" href="/api/auth/discord/start?next=%2F">Sign in with Discord</a>
+                <a class="btn-link" href="${releasesHref}" target="_blank" rel="noopener">Download Windows Companion →</a>
+              </div>
+            </div>
+            <div class="hero-welcome-art">
+              <img src="/assets/img/header-astro-lab.jpg" alt="Fightcade Lab Astro City candy cabinet and lab flask" loading="eager" />
+            </div>
+          </div>
+        </div>
+      `;
+      host.innerHTML = heroHtml;
+      return;
+    }
+
+    const displayName = (state.auth.user && state.auth.user.discord_username) || d.username || "Player";
+    const companionReady = Boolean(
+      state.companionConnected ||
+      (state.companionBridge && state.companionBridge.connected) ||
+      (state.capabilities && state.capabilities.companion_paired)
+    );
+    const companionCta = !companionReady
+      ? `<a class="btn-link primary sm" href="${releasesHref}" target="_blank" rel="noopener">Get Windows Companion →</a>`
+      : "";
+    const clipsCta = Number(pulse.notes_total || 0) > 0
+      ? `<button class="sm" onclick="navigateTo('notes')">Open My Shared Clips →</button>`
+      : "";
+    const byocSetupCta = `<button class="sm" onclick="navigateTo('matches')">Set up mobile replay sync (free) →</button>`;
+    const hostedActions = `<div class="hero-actions">${companionCta}${byocSetupCta}${clipsCta}</div>`;
+
+    heroHtml = `
+      <div class="hero-card">
+        <div class="hero-welcome-grid">
+          <div>
+            <div class="hero-eyebrow"><span class="dot"></span><span>FIGHTCADE LAB · CLOUD</span></div>
+            <div class="hero-headline" style="font-size:22px;">Welcome back, ${esc(displayName)}</div>
+            <div class="hero-meta">Full-match Replay Studio and Takeover run locally on your PC. Your shared moments, playlists, and coaching replies stay accessible here on any device.</div>
+            ${hostedActions}
+          </div>
+          <div class="hero-welcome-art">
+            <img src="/assets/img/header-astro-lab.jpg" alt="Fightcade Lab Astro City candy cabinet and lab flask" loading="eager" />
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (!latest) {
     const env = (state.capabilities && state.capabilities.environment) || {};
     const checkBadge = (ok, label) =>
       `<span class="pill ${ok ? "ready" : "unproc"}">${ok ? "✓" : "○"} ${esc(label)}</span>`;
-    const wizardChecks = !isHostedMode()
-      ? `
+    const wizardChecks = `
         <div class="row" style="gap:6px; margin:8px 0 12px;">
           ${checkBadge(env.fbneo_found, "Fightcade FBNeo")}
           ${checkBadge(env.rom_found, "3S ROM")}
@@ -56,8 +110,7 @@ function renderHomeWorkbench() {
           <button class="sm" onclick="registerCompanionUriFromUi()">⚡ Register fightcadelab:// Links</button>
           <button class="sm" onclick="pairLocalCompanionWithBrowser()">🔗 Pair with Browser</button>
         </div>
-      `
-      : "";
+      `;
     heroHtml = `
       <div class="hero-card">
         <div class="hero-welcome-grid">

@@ -1058,6 +1058,7 @@ class ProcessingQueue:
                     progress_total=rcnt,
                     error=None,
                 )
+                self._trigger_byoc_auto_sync(qid)
                 return
 
             # Step 2: Offline headless per-round silent MP4 render (for already-cached sets or force re-render)
@@ -1098,6 +1099,7 @@ class ProcessingQueue:
                 progress_total=int(mf.get("round_count", 0)),
                 error=None,
             )
+            self._trigger_byoc_auto_sync(qid)
         except Exception as exc:  # noqa: BLE001
             self._update(
                 qid,
@@ -1106,6 +1108,15 @@ class ProcessingQueue:
                 message=f"Failed: {exc}",
                 error=str(exc),
             )
+
+    def _trigger_byoc_auto_sync(self, qid: str) -> None:
+        """Non-blocking background R2 sync + cloud note pull when BYOC auto-sync is enabled."""
+        try:
+            from fightcade_analysis.byoc_r2 import trigger_background_byoc_sync
+
+            trigger_background_byoc_sync(self.data_dir, quark_id=qid, only_if_auto=True)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _loop(self) -> None:
         while not self._stop_evt.is_set():

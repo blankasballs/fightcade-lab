@@ -297,6 +297,20 @@ function buildStatusPopoverHtml() {
          <button type="button" class="sm primary" style="padding:3px 9px; font-size:11.5px;" onclick="event.stopPropagation(); pairLocalCompanionWithBrowser()">Connect →</button>
        </span>`;
 
+  // Mobile Replay Sync (Cloudflare R2 BYOC) key-value row
+  const byoc = caps.byoc || {};
+  const byocUsedGb = (Number(byoc.used_bytes || 0) / 1e9).toFixed(1);
+  const byocCapGb = Number(byoc.cap_gb || 9.0).toFixed(1);
+  const byocRightHtml = byoc.connected
+    ? `<span class="row" style="gap:8px; flex-wrap:nowrap; min-width:0;">
+         <span class="env-ok" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">● ${esc(byoc.bucket_name || "R2")} (${byocUsedGb} / ${byocCapGb} GB)</span>
+         <button type="button" class="link-btn" onclick="event.stopPropagation(); closeStatusPopover(); openByocModal()">Manage</button>
+       </span>`
+    : `<span class="row" style="gap:8px; flex-wrap:nowrap;">
+         <span style="font-size:12px; color:var(--muted);">Off</span>
+         <button type="button" class="sm" style="padding:3px 9px; font-size:11.5px;" onclick="event.stopPropagation(); closeStatusPopover(); openByocModal()">Set up R2 →</button>
+       </span>`;
+
   // Replay Storage key-value row + collapsible cap editor
   const totalGb = Number(cache.total_gb || 0).toFixed(2);
   const capNum = Number(cache.cap_gb || 0);
@@ -344,6 +358,10 @@ function buildStatusPopoverHtml() {
       <div class="pop-kv-row">
         <span class="pop-kv-label">Cloud Sharing</span>
         ${cloudRightHtml}
+      </div>
+      <div class="pop-kv-row">
+        <span class="pop-kv-label">Mobile Replay Sync</span>
+        ${byocRightHtml}
       </div>
       <div class="pop-kv-row">
         <span class="pop-kv-label">Replay Storage</span>

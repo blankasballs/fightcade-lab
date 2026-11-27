@@ -101,8 +101,8 @@
 
     <!-- VIEW 2: FULL MATCH HISTORY CATALOG (#matches) -->
     <section id="viewMatches" class="view-section hidden">
-      <div class="card">
-        <div class="row" style="margin-bottom:8px;">
+      <div id="matchesFilterCard" class="card">
+        <div id="matchesUsernameRow" class="row" style="margin-bottom:8px;">
           <input id="usernameInput" class="input" style="flex:1;" placeholder="Fightcade username" onkeydown="if(event.key==='Enter'){event.preventDefault();refreshFromFightcade(false);}" />
           <button id="btnResetUser" class="ghost sm hidden" onclick="resetToDefaultUser()" data-tip="Return to your default Fightcade handle">Me</button>
           <button id="btnRefresh" class="primary sm" onclick="refreshFromFightcade(false)" data-tip="Pull latest match history from Fightcade">Refresh</button>
@@ -123,7 +123,7 @@
           </select>
           <button id="btnClearCharFilter" class="ghost sm hidden" style="padding:4px 8px;" onclick="clearCharFilters()">Clear</button>
         </div>
-        <div class="row-between" style="font-size:12px; color:var(--muted); margin-top:2px;">
+        <div id="matchesRefreshRow" class="row-between" style="font-size:12px; color:var(--muted); margin-top:2px;">
           <span id="lastRefreshedText">Loading match history...</span>
           <button class="ghost sm" style="padding:3px 6px;" onclick="refreshFromFightcade(true)" data-tip="Fetch older pages from Fightcade match history">Load Older ↓</button>
         </div>
@@ -408,9 +408,12 @@
     <!-- VIEW 7: ABOUT FIGHTCADE LAB (#about / /about) -->
     <section id="viewAbout" class="view-section hidden">
       <article class="card about-card">
-        <div class="about-banner-frame">
-          <img class="about-banner-img" src="/assets/img/header-astro-lab.jpg" alt="Fightcade Lab arcade cabinet and alchemy flask banner" width="1280" height="720" loading="lazy" />
-        </div>
+        <figure class="about-banner">
+          <div class="about-banner-frame">
+            <img class="about-banner-img" src="/assets/img/about-evo-moment37.jpg" alt="EVO 2004, Daigo Umehara and Justin Wong at the CRT during Moment 37" width="960" height="707" loading="lazy" />
+          </div>
+          <figcaption class="about-banner-caption">EVO 2004 · Pomona, CA</figcaption>
+        </figure>
         <h1 class="about-title">About Fightcade Lab</h1>
 
         <div class="about-section">
@@ -426,6 +429,145 @@
         <div class="about-section">
           <h2>Local-first and respectful of Fightcade</h2>
           <p>Your replays, notes, and savestates stay on your machine. Cloud sharing on <code>fightcadelab.com</code> is optional and only stores short clips you choose to share, which you can revoke at any time. The companion never touches live netplay, never injects into running matches, and does not bundle ROMs.</p>
+        </div>
+
+        <div id="aboutDecentralized" class="about-section">
+          <h2>How it stays free (decentralized by design)</h2>
+          <p>Hosting and processing hours of 60fps gameplay video on central servers is expensive, which is why most gaming tools charge monthly subscriptions. Fightcade Lab stays free by splitting the work cleanly between the web interface, your desktop, and optional personal cloud storage. Hover or tap any card below to see how it works.</p>
+
+          <!-- DIAGRAM 1: LOCAL PROCESSING & REPLAY TAKEOVER -->
+          <div id="archJourneyLocal" class="arch-journey-card">
+            <div class="arch-journey-head">1. Local processing and Replay Takeover</div>
+            <div class="arch-flow arch-flow-2">
+              <div class="arch-zone">
+                <div class="arch-zone-label is-sky">FIGHTCADELAB.COM</div>
+                <button type="button" class="arch-node-btn" data-arch-node="local-web" aria-expanded="false" aria-controls="archPop-local-web">
+                  <span class="arch-node-hint" aria-hidden="true">ⓘ</span>
+                  <span class="arch-icon-tile">
+                    <img class="arch-icon-img is-logo" src="/assets/img/icon-192.png" alt="Fightcade Lab" width="72" height="72" loading="lazy" />
+                  </span>
+                  <span class="arch-node-title">Fightcade Lab</span>
+                  <span class="arch-node-sub">Replay Studio &amp; Notes UI</span>
+                </button>
+                <div id="archPop-local-web" class="arch-popover arch-pop-left" role="region" aria-label="Fightcade Lab Web UI details">
+                  <div class="arch-pop-title">Fightcade Lab Web UI</div>
+                  <div class="arch-pop-body">Hosted web interface at fightcadelab.com. Serves Replay Studio, Notes, Playlists, and share links. Central servers only store lightweight notes, playlists, and short clips you choose to share, never your ROMs or full match recordings.</div>
+                </div>
+              </div>
+
+              <div class="arch-connector is-bidir" aria-hidden="true">
+                <div class="arch-conn-leg is-forward">
+                  <span class="arch-conn-lbl">Trigger capture / takeover</span>
+                  <svg class="arch-arrow-svg" viewBox="0 0 64 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="2" y1="7" x2="58" y2="7" />
+                    <polyline points="52,2.5 59,7 52,11.5" />
+                  </svg>
+                </div>
+                <div class="arch-conn-leg is-reverse">
+                  <svg class="arch-arrow-svg" viewBox="0 0 64 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="62" y1="7" x2="6" y2="7" />
+                    <polyline points="12,2.5 5,7 12,11.5" />
+                  </svg>
+                  <span class="arch-conn-lbl">Local video &amp; frame data</span>
+                </div>
+              </div>
+
+              <div class="arch-zone">
+                <div class="arch-zone-label is-emerald">YOUR PC (LOCAL)</div>
+                <button type="button" class="arch-node-btn" data-arch-node="local-pc" aria-expanded="false" aria-controls="archPop-local-pc">
+                  <span class="arch-node-hint" aria-hidden="true">ⓘ</span>
+                  <span class="arch-icon-tile">
+                    <img class="arch-icon-img" src="/assets/img/icon-desktop-192.png" alt="Desktop PC" width="72" height="72" loading="lazy" />
+                  </span>
+                  <span class="arch-node-title">Companion App</span>
+                  <span class="arch-node-sub">60fps capture · Hitboxes · Takeover</span>
+                </button>
+                <div id="archPop-local-pc" class="arch-popover arch-pop-right" role="region" aria-label="Companion App details">
+                  <div class="arch-pop-title">Windows Companion App</div>
+                  <div class="arch-pop-body">Runs locally on your desktop. Watches for completed Fightcade sets, drives local FBNeo headlessly to capture 60fps round videos and hitbox overlays, and launches instant Replay Takeover drills right on your hardware. Never touches live netplay and never bundles ROMs.</div>
+                </div>
+              </div>
+            </div>
+            <div class="arch-journey-foot">Heavy emulation, video capture, and Replay Takeover all run locally on your desktop hardware.</div>
+          </div>
+
+          <!-- DIAGRAM 2: OPTIONAL MOBILE SYNC (BYO CLOUDFLARE R2) -->
+          <div id="archJourneyByoc" class="arch-journey-card">
+            <div class="arch-journey-head">2. Optional mobile sync (Bring Your Own Cloudflare R2)</div>
+            <div class="arch-flow arch-flow-3">
+              <div class="arch-zone">
+                <div class="arch-zone-label is-slate">FIGHTCADE LAB</div>
+                <button type="button" class="arch-node-btn" data-arch-node="byoc-fcl" aria-expanded="false" aria-controls="archPop-byoc-fcl">
+                  <span class="arch-node-hint" aria-hidden="true">ⓘ</span>
+                  <span class="arch-icon-tile is-compact">
+                    <img class="arch-icon-img is-logo" src="/assets/img/icon-192.png" alt="Fightcade Lab" width="68" height="68" loading="lazy" />
+                  </span>
+                  <span class="arch-node-title">Fightcade Lab</span>
+                  <span class="arch-node-sub">Syncs processed sets</span>
+                  <span class="arch-node-pill">Auto-sync on</span>
+                </button>
+                <div id="archPop-byoc-fcl" class="arch-popover arch-pop-left" role="region" aria-label="Fightcade Lab Sync details">
+                  <div class="arch-pop-title">Paired Companion Sync</div>
+                  <div class="arch-pop-body">Once you connect your bucket, the paired Companion uploads processed round videos and hitbox overlays straight from your machine. A rolling 9 GB auto-prune cap keeps storage safely within Cloudflare's free tier without deleting sets that have saved notes or drills.</div>
+                </div>
+              </div>
+
+              <div class="arch-connector" aria-hidden="true">
+                <span class="arch-conn-lbl">Upload replays</span>
+                <svg class="arch-arrow-svg" viewBox="0 0 46 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="2" y1="7" x2="40" y2="7" />
+                  <polyline points="34,2.5 41,7 34,11.5" />
+                </svg>
+              </div>
+
+              <div class="arch-zone">
+                <div class="arch-zone-label is-amber">YOUR CLOUDFLARE</div>
+                <button type="button" class="arch-node-btn" data-arch-node="byoc-r2" aria-expanded="false" aria-controls="archPop-byoc-r2">
+                  <span class="arch-node-hint" aria-hidden="true">ⓘ</span>
+                  <span class="arch-icon-tile is-compact">
+                    <svg class="arch-cf-svg" viewBox="0 0 64 64" width="52" height="52" aria-hidden="true">
+                      <path fill="#f38020" d="M44.8 43.2H18.4c-5.4 0-9.6-4.2-9.6-9.5 0-4.9 3.6-8.9 8.4-9.4 1.6-5.4 6.6-9.3 12.6-9.3 6.8 0 12.4 5.1 13.1 11.7.7-.2 1.5-.3 2.3-.3 4.8 0 8.6 3.7 8.6 8.4 0 4.6-3.9 8.4-9 8.4z"/>
+                      <path fill="#faad3f" d="M46.4 30.8c-.6 0-1.2.1-1.8.2-.7-4.5-4.6-8-9.3-8-3.8 0-7.1 2.2-8.6 5.5 3.1.9 5.5 3.5 6.1 6.7h19.6c.4-.9.6-1.9.6-2.9 0-3.2-2.9-1.5-6.6-1.5z" opacity="0.9"/>
+                      <path fill="#f38020" d="M45.2 43.2H18.4c-5.1 0-9.2-3.9-9.5-8.9h44.6c-.4 5-4.1 8.9-8.3 8.9z"/>
+                    </svg>
+                  </span>
+                  <span class="arch-node-title">Cloudflare R2</span>
+                  <span class="arch-node-sub">Your own private replay bucket</span>
+                  <span class="arch-node-pill">10 GB free tier</span>
+                </button>
+                <div id="archPop-byoc-r2" class="arch-popover arch-pop-center" role="region" aria-label="Cloudflare R2 details">
+                  <div class="arch-pop-title">Your Cloudflare R2 Bucket</div>
+                  <div class="arch-pop-body">Private object storage in your own Cloudflare account with 10 GB of free storage and free video bandwidth. Your credentials stay encrypted at rest, never reach browsers, and can be rotated or disconnected at any time.</div>
+                </div>
+              </div>
+
+              <div class="arch-connector" aria-hidden="true">
+                <span class="arch-conn-lbl">Signed stream</span>
+                <svg class="arch-arrow-svg" viewBox="0 0 46 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="2" y1="7" x2="40" y2="7" />
+                  <polyline points="34,2.5 41,7 34,11.5" />
+                </svg>
+              </div>
+
+              <div class="arch-zone">
+                <div class="arch-zone-label is-sky">YOUR PHONE</div>
+                <button type="button" class="arch-node-btn" data-arch-node="byoc-mobile" aria-expanded="false" aria-controls="archPop-byoc-mobile">
+                  <span class="arch-node-hint" aria-hidden="true">ⓘ</span>
+                  <span class="arch-icon-tile is-compact">
+                    <img class="arch-icon-img" src="/assets/img/icon-mobile-192.png" alt="Mobile device" width="68" height="68" loading="lazy" />
+                  </span>
+                  <span class="arch-node-title">Mobile Browser</span>
+                  <span class="arch-node-sub">Watch full replays &amp; jot notes</span>
+                  <span class="arch-node-pill">Review anywhere</span>
+                </button>
+                <div id="archPop-byoc-mobile" class="arch-popover arch-pop-right" role="region" aria-label="Mobile Browser details">
+                  <div class="arch-pop-title">Mobile Replay Studio</div>
+                  <div class="arch-pop-body">When you open a match on your phone, Fightcade Lab mints a short-lived signed link so your mobile browser streams 60fps video and hitbox overlays straight from your R2 bucket. Notes you save on mobile sync back to your desktop Companion automatically.</div>
+                </div>
+              </div>
+            </div>
+            <div class="arch-journey-foot">Video streams straight from your own Cloudflare R2 bucket to your mobile browser. Fightcade Lab only stores lightweight notes and short-lived signed links.</div>
+          </div>
         </div>
 
         <div class="about-section">
@@ -645,6 +787,17 @@
         <button class="ghost sm" onclick="closeShareBundleModal()">✕</button>
       </div>
       <div id="shareBundleBody"></div>
+    </div>
+  </div>
+
+  <!-- MOBILE REPLAY SYNC (CLOUDFLARE R2 BYOC) MODAL -->
+  <div id="byocModal" class="modal-backdrop hidden" onclick="if(event.target===this) closeByocModal()">
+    <div class="modal-card" style="max-width:520px;">
+      <div class="row-between" style="margin-bottom:10px;">
+        <strong>Mobile Replay Sync (Cloudflare R2)</strong>
+        <button class="ghost sm" onclick="closeByocModal()">✕</button>
+      </div>
+      <div id="byocModalBody"></div>
     </div>
   </div>
 

@@ -149,7 +149,11 @@ function syncTopNav() {
   setTopbarHidden(false);
 
   document.getElementById("navHome").classList.toggle("active", state.activeView === "home");
-  document.getElementById("navMatches").classList.toggle("active", state.activeView === "matches");
+  const navMatches = document.getElementById("navMatches");
+  if (navMatches) {
+    navMatches.classList.remove("hidden");
+    navMatches.classList.toggle("active", state.activeView === "matches");
+  }
   document.getElementById("navNotes").classList.toggle("active", state.activeView === "notes");
   const navAbout = document.getElementById("navAbout");
   if (navAbout) navAbout.classList.toggle("active", state.activeView === "about");
@@ -191,6 +195,7 @@ function navigateTo(view, updateHash = true) {
     if (typeof closeAllHubCardMenus === "function") closeAllHubCardMenus();
     if (typeof closeNotesTagFilterMenu === "function") closeNotesTagFilterMenu();
   }
+  if (view !== "about" && typeof closeAllArchPopovers === "function") closeAllArchPopovers();
   if (view !== "shared_moment" && view !== "shared_playlist" && typeof stopSharedPlayback === "function") stopSharedPlayback();
   state.playStopGf = null;
 
@@ -235,6 +240,71 @@ function navigateTo(view, updateHash = true) {
 // Backward-compatible view helpers
 function showHistoryView() { navigateTo("matches"); }
 function showNotesView() { navigateTo("notes"); }
+
+function openAboutExplainer() {
+  navigateTo("about");
+  const scrollToSec = () => {
+    const el = document.getElementById("aboutDecentralized");
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(scrollToSec);
+  } else {
+    scrollToSec();
+  }
+}
+
+// ---------- ABOUT PAGE INTERACTIVE ARCHITECTURE POPOVERS ----------
+function closeAllArchPopovers() {
+  const openZones = document.querySelectorAll ? document.querySelectorAll(".arch-zone.is-open") : [];
+  let closedAny = false;
+  if (openZones && openZones.length) {
+    openZones.forEach(zone => {
+      zone.classList.remove("is-open");
+      const btn = zone.querySelector ? zone.querySelector(".arch-node-btn") : null;
+      if (btn) btn.setAttribute("aria-expanded", "false");
+      closedAny = true;
+    });
+  }
+  const activeEl = typeof document !== "undefined" ? document.activeElement : null;
+  if (activeEl && activeEl.classList && activeEl.classList.contains("arch-node-btn") && typeof activeEl.blur === "function") {
+    activeEl.blur();
+    closedAny = true;
+  }
+  return closedAny;
+}
+
+function toggleArchNodePopover(btn) {
+  if (!btn || typeof btn.closest !== "function") return false;
+  const zone = btn.closest(".arch-zone");
+  if (!zone) return false;
+  const wasOpen = zone.classList.contains("is-open");
+  closeAllArchPopovers();
+  if (!wasOpen) {
+    zone.classList.add("is-open");
+    btn.setAttribute("aria-expanded", "true");
+    return true;
+  }
+  return false;
+}
+
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  document.addEventListener("click", e => {
+    const tgt = e && e.target;
+    if (!tgt || typeof tgt.closest !== "function") return;
+    const nodeBtn = tgt.closest(".arch-node-btn");
+    if (nodeBtn) {
+      e.preventDefault();
+      toggleArchNodePopover(nodeBtn);
+      return;
+    }
+    if (!tgt.closest(".arch-zone")) {
+      closeAllArchPopovers();
+    }
+  });
+}
 
 function goBackFromStudio() {
   if (isMobileNavMenuOpen()) closeMobileNavMenu({ fromPopstate: false });
@@ -543,6 +613,11 @@ document.addEventListener("keydown", e => {
     if (!document.getElementById("reportModal")?.classList.contains("hidden")) { closeReportModal(); return; }
     if (!document.getElementById("termsModal")?.classList.contains("hidden")) { closeTermsModal(); return; }
     if (!document.getElementById("shareBundleModal")?.classList.contains("hidden")) { closeShareBundleModal(); return; }
+    if (!document.getElementById("byocModal")?.classList.contains("hidden")) { closeByocModal(); return; }
+    if (state.activeView === "about" && typeof closeAllArchPopovers === "function" && closeAllArchPopovers()) {
+      e.preventDefault();
+      return;
+    }
     if (state.activeView === "studio" && typeof dismissStudioNextOverlay === "function" && dismissStudioNextOverlay()) {
       e.preventDefault();
       return;
@@ -902,6 +977,8 @@ window.addEventListener("focus", () => {
   if (!isHostedMode()) {
     if (state.shareModal && !state.capabilities.has_cloud_token && typeof refreshShareModalConnectionStatus === "function") {
       refreshShareModalConnectionStatus(true);
+    } else if (state.byocModal && !state.capabilities.has_cloud_token) {
+      loadCapabilities().then(() => { if (state.byocModal) renderByocModal(); }).catch(() => {});
     } else if (typeof isStatusPopoverOpen === "function" && isStatusPopoverOpen()) {
       loadCapabilities().then(() => { if (isStatusPopoverOpen()) renderStatusPopover(); }).catch(() => {});
     }

@@ -727,6 +727,7 @@ def test_mobile_http_endpoints_and_security(tmp_path: Path) -> None:
             ("/assets/img/icon-192.png", "image/png"),
             ("/assets/img/icon-512.png", "image/png"),
             ("/assets/img/header-astro-lab.jpg", "image/jpeg"),
+            ("/assets/img/about-evo-moment37.jpg", "image/jpeg"),
         ]
         for asset_path, expected_ct in brand_asset_expectations:
             r_img = requests.get(f"{base}{asset_path}", timeout=5)

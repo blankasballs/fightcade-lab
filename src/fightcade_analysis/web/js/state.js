@@ -52,6 +52,7 @@ const state = {
     authenticated: false,
     user: null,
     quota: null,
+    has_byoc: false,
   },
   capabilities: {
     mode: APP_MODE,
@@ -70,11 +71,26 @@ const state = {
     companion_paired: false,
     has_cloud_token: false,
     cloud_base_url: "https://fightcadelab.com",
+    byoc: {
+      connected: false,
+      bucket_name: null,
+      account_id_masked: null,
+      access_key_id_masked: null,
+      has_separate_read_token: false,
+      auto_sync: true,
+      cap_gb: 9.0,
+      used_bytes: 0,
+      synced_count: 0,
+      synced_quark_ids: [],
+      syncing: false,
+      last_error: null,
+    },
     disk_cache: { total_bytes: 0, total_gb: 0, match_count: 0, protected_count: 0, cap_gb: 5.0 },
     environment: null,
   },
   watcher: { phase: "idle", message: "Watching Fightcade", running: false },
   jobs: [],
+  companionConnected: false,
 
   // Navigation & Browser History
   activeView: "home", // home | matches | notes | insights | studio | report | shared_moment | shared_playlist
@@ -216,10 +232,15 @@ const state = {
   sharedOverlay: null,
   sharedRaf: null,
 
-  // Report & Share Moment Modals
+  // Report, Share Moment & BYOC Modals
   reportTarget: null,
   addToPlPayload: null,
   shareModal: null,
+  byocModal: null,
+  hostedByocConnected: false,
+  hostedByocBucket: "",
+  hostedByocUsedBytes: 0,
+  hostedByocCapGb: 9.0,
 };
 
 function apiUrl(path) {
@@ -1125,16 +1146,22 @@ async function probeLocalCompanion() {
   if (!isHostedMode()) return;
   try {
     const res = await companionApi("/api/companion/ping");
+    const connected = Boolean(res.ok && res.token_valid && res.can_takeover);
     state.companionBridge = {
-      connected: Boolean(res.ok && res.token_valid && res.can_takeover),
+      connected,
       reachable: Boolean(res.ok),
       install_id: res.install_id || null,
     };
-    if (state.companionBridge.connected) {
+    state.companionConnected = connected;
+    if (connected) {
       state.capabilities.can_takeover = true;
+      if (state.activeView === "home" && state.homeData && typeof renderHomeWorkbench === "function") {
+        renderHomeWorkbench();
+      }
     }
   } catch (_) {
     state.companionBridge = { connected: false, reachable: false, install_id: null };
+    state.companionConnected = false;
   }
 }
 
@@ -1172,6 +1199,7 @@ async function handleBrowserPairRoute(code) {
     if (res.token) {
       setCompanionToken(res.token);
       state.companionBridge = { connected: true, reachable: true, install_id: res.install_id || null };
+      state.companionConnected = true;
       state.capabilities.can_takeover = true;
       state.capabilities.has_cloud_token = Boolean(cloudToken || state.capabilities.has_cloud_token);
       toast("Connected! Your Fightcade Lab Companion is paired — you can return to the app to share clips.");
@@ -1364,12 +1392,13 @@ async function loadAuthState() {
       authenticated: Boolean(res.authenticated && res.user),
       user: res.user || null,
       quota: res.quota || null,
+      has_byoc: Boolean(res.has_byoc),
     };
     if (state.auth.user && !state.username) {
       state.username = state.auth.user.fightcade_username || state.auth.user.discord_username || "";
     }
   } catch (_) {
-    state.auth = { authenticated: false, user: null, quota: null };
+    state.auth = { authenticated: false, user: null, quota: null, has_byoc: false };
   }
   renderAuthControls();
 }
@@ -1419,7 +1448,18 @@ async function logoutAccount() {
   try {
     await api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
     state.auth = { authenticated: false, user: null, quota: null };
+    state.hubNotes = [];
+    state.hubCounts = {};
+    state.hubAvailableChars = { self: [], opp: [] };
+    state.playlists = [];
+    state.focusGoals = [];
+    state.graduatedGoals = [];
     renderAuthControls();
+    if (state.activeView === "home" && typeof loadHomeWorkbench === "function") {
+      loadHomeWorkbench();
+    } else if (state.activeView === "notes" && typeof renderHubNotes === "function") {
+      renderHubNotes();
+    }
     toast("Signed out");
   } catch (err) {
     toast("Sign out failed: " + err.message);
@@ -2296,6 +2336,354 @@ async function downloadShareMomentMp4() {
 
 async function prepareLocalShareBundle(payload) {
   return shareMomentBundle(payload);
+}
+
+// ---------- MOBILE REPLAY SYNC (CLOUDFLARE R2 BYOC) MODAL ----------
+function closeByocModal() {
+  state.byocModal = null;
+  const modal = document.getElementById("byocModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function toggleByocReadTokenDrawer() {
+  if (!state.byocModal) return;
+  _syncByocModalInputsToState();
+  state.byocModal.showReadToken = !state.byocModal.showReadToken;
+  renderByocModal();
+}
+
+function _syncByocModalInputsToState() {
+  const bm = state.byocModal;
+  if (!bm) return;
+  const getVal = id => {
+    const el = document.getElementById(id);
+    return el ? el.value : null;
+  };
+  const acct = getVal("byocAccountId");
+  if (acct !== null) bm.accountId = acct;
+  const bucket = getVal("byocBucketName");
+  if (bucket !== null) bm.bucketName = bucket;
+  const ak = getVal("byocAccessKeyId");
+  if (ak !== null) bm.accessKeyId = ak;
+  const sk = getVal("byocSecretKey");
+  if (sk !== null) bm.secretAccessKey = sk;
+  const rak = getVal("byocReadAccessKeyId");
+  if (rak !== null) bm.readAccessKeyId = rak;
+  const rsk = getVal("byocReadSecretKey");
+  if (rsk !== null) bm.readSecretAccessKey = rsk;
+  const cap = getVal("byocCapGb");
+  if (cap !== null) bm.capGb = cap;
+  const autoEl = document.getElementById("byocAutoSync");
+  if (autoEl) bm.autoSync = Boolean(autoEl.checked);
+}
+
+function renderByocModal() {
+  const modal = document.getElementById("byocModal");
+  const body = document.getElementById("byocModalBody");
+  const bm = state.byocModal;
+  if (!modal || !body || !bm) return;
+
+  const caps = state.capabilities || {};
+  const byoc = bm.status || caps.byoc || {};
+  const hasCloud = Boolean(caps.has_cloud_token);
+  const busy = Boolean(bm.busy);
+  const errHtml = bm.error ? `<div class="share-error-box">${esc(bm.error)}</div>` : "";
+  const footerLinkHtml = `
+    <div class="share-footer-row">
+      <button type="button" class="link-btn" onclick="closeByocModal(); openAboutExplainer();">Why bring your own R2? How Fightcade Lab stays free →</button>
+    </div>
+  `;
+
+  if (byoc.connected) {
+    const usedGb = (Number(byoc.used_bytes || 0) / 1e9).toFixed(2);
+    const capGb = Number(byoc.cap_gb || 9.0).toFixed(1);
+    const cnt = Number(byoc.synced_count || 0);
+    const syncLabel = byoc.syncing
+      ? `<span class="btn-spin" aria-hidden="true"></span>Syncing...`
+      : "Sync Recent Sets";
+    body.innerHTML = `
+      <div class="share-modal-stack">
+        <div class="byoc-usage-box">
+          <div class="row-between" style="margin-bottom:4px;">
+            <strong style="font-size:13.5px;">● ${esc(byoc.bucket_name || "R2 Bucket")}</strong>
+            <span class="pill ready mono">${usedGb} / ${capGb} GB</span>
+          </div>
+          <div style="font-size:12px; color:var(--muted);">
+            ${cnt} set${cnt === 1 ? "" : "s"} synced · Account ${esc(byoc.account_id_masked || "")}${byoc.has_separate_read_token ? " · Read-Only cloud token" : ""}
+          </div>
+          ${byoc.last_error ? `<div style="font-size:12px; color:var(--rose-fg); margin-top:4px;">Last sync error: ${esc(byoc.last_error)}</div>` : ""}
+        </div>
+
+        <label class="share-check">
+          <input id="byocAutoSync" type="checkbox" ${bm.autoSync ? "checked" : ""} onchange="saveByocSettingsFromModal()" ${busy ? "disabled" : ""} />
+          <span>Auto-sync finished matches to R2</span>
+        </label>
+
+        <div class="row" style="gap:8px; align-items:flex-end;">
+          <label class="field-lbl" style="flex:1; margin:0;">Rolling Cap (GB)
+            <input id="byocCapGb" type="number" step="0.5" min="0.5" max="500" class="input mono" value="${esc(bm.capGb ?? capGb)}" ${busy ? "disabled" : ""} />
+          </label>
+          <button type="button" class="sm" onclick="saveByocSettingsFromModal()" ${busy ? "disabled" : ""}>Save Cap</button>
+        </div>
+
+        ${errHtml}
+
+        <div class="share-lifecycle-row">
+          <button type="button" class="sm danger" onclick="disconnectByocFromModal()" ${busy ? "disabled" : ""}>Disconnect</button>
+          <button type="button" class="sm primary" onclick="triggerByocSyncNow()" ${busy || byoc.syncing ? "disabled" : ""}>${syncLabel}</button>
+        </div>
+        ${footerLinkHtml}
+      </div>
+    `;
+    modal.classList.remove("hidden");
+    return;
+  }
+
+  const cloudBannerHtml = !hasCloud
+    ? `
+      <div class="pop-warning" style="margin-top:0;">
+        <div class="row-between" style="gap:8px;">
+          <span>Connect your Fightcade Lab cloud account first so your phone can sign in.</span>
+          <button type="button" class="sm primary" onclick="pairLocalCompanionWithBrowser()">Connect Account →</button>
+        </div>
+      </div>
+    `
+    : "";
+
+  const readDrawerHtml = bm.showReadToken
+    ? `
+      <div class="pop-storage-edit" style="display:flex; flex-direction:column; gap:8px;">
+        <label class="field-lbl" style="margin:0;">Read Access Key ID
+          <input id="byocReadAccessKeyId" class="input mono" value="${esc(bm.readAccessKeyId || "")}" placeholder="Optional Read-Only token Access Key ID" autocomplete="off" ${busy ? "disabled" : ""} />
+        </label>
+        <label class="field-lbl" style="margin:0;">Read Secret Access Key
+          <input id="byocReadSecretKey" type="password" class="input mono" value="${esc(bm.readSecretAccessKey || "")}" placeholder="Optional Read-Only token Secret Key" autocomplete="off" ${busy ? "disabled" : ""} />
+        </label>
+      </div>
+    `
+    : "";
+
+  body.innerHTML = `
+    <div class="share-modal-stack">
+      <ol class="byoc-steps">
+        <li>Create a free R2 bucket in Cloudflare (10 GB free, $0 video streaming).</li>
+        <li>Create an R2 API token scoped to that bucket.</li>
+        <li>Paste your credentials below. Fightcade Lab configures CORS automatically and caps sync at 9.0 GB so it stays free.</li>
+      </ol>
+      ${cloudBannerHtml}
+      <div class="form-stack">
+        <label class="field-lbl">Account ID
+          <input id="byocAccountId" class="input mono" value="${esc(bm.accountId || "")}" placeholder="32-character Cloudflare Account ID" autocomplete="off" ${busy ? "disabled" : ""} />
+        </label>
+        <label class="field-lbl">Bucket Name
+          <input id="byocBucketName" class="input mono" value="${esc(bm.bucketName || "")}" placeholder="e.g. fightcade-replays" autocomplete="off" ${busy ? "disabled" : ""} />
+        </label>
+        <label class="field-lbl">Access Key ID
+          <input id="byocAccessKeyId" class="input mono" value="${esc(bm.accessKeyId || "")}" placeholder="R2 API Token Access Key ID" autocomplete="off" ${busy ? "disabled" : ""} />
+        </label>
+        <label class="field-lbl">Secret Access Key
+          <input id="byocSecretKey" type="password" class="input mono" value="${esc(bm.secretAccessKey || "")}" placeholder="R2 API Token Secret Access Key" autocomplete="off" ${busy ? "disabled" : ""} />
+        </label>
+        <div>
+          <button type="button" class="pop-disclosure-btn" onclick="toggleByocReadTokenDrawer()">
+            <span>${bm.showReadToken ? "▾" : "▸"} Optional: Use a separate Read-Only token for fightcadelab.com</span>
+          </button>
+          ${readDrawerHtml}
+        </div>
+        <div class="row" style="gap:12px; align-items:center; justify-content:space-between;">
+          <label class="field-lbl" style="width:130px; margin:0;">Rolling Cap (GB)
+            <input id="byocCapGb" type="number" step="0.5" min="0.5" max="500" class="input mono" value="${esc(bm.capGb ?? "9.0")}" ${busy ? "disabled" : ""} />
+          </label>
+          <label class="share-check" style="margin-top:16px;">
+            <input id="byocAutoSync" type="checkbox" ${bm.autoSync !== false ? "checked" : ""} ${busy ? "disabled" : ""} />
+            <span>Auto-sync finished matches</span>
+          </label>
+        </div>
+      </div>
+      ${errHtml}
+      <div class="row" style="justify-content:flex-end; gap:8px;">
+        <button type="button" class="sm" onclick="closeByocModal()" ${busy ? "disabled" : ""}>Cancel</button>
+        <button id="btnByocConnect" type="button" class="sm primary" onclick="submitByocConnect()" ${busy || !hasCloud ? "disabled" : ""}>
+          ${busy ? `<span class="btn-spin" aria-hidden="true"></span>Testing &amp; Connecting...` : "Test &amp; Connect"}
+        </button>
+      </div>
+      ${footerLinkHtml}
+    </div>
+  `;
+  modal.classList.remove("hidden");
+}
+
+async function openByocModal() {
+  const curByoc = (state.capabilities && state.capabilities.byoc) || {};
+  state.byocModal = {
+    status: curByoc,
+    accountId: "",
+    bucketName: curByoc.bucket_name || "",
+    accessKeyId: "",
+    secretAccessKey: "",
+    readAccessKeyId: "",
+    readSecretAccessKey: "",
+    showReadToken: false,
+    capGb: String(curByoc.cap_gb ?? 9.0),
+    autoSync: curByoc.auto_sync !== false,
+    busy: false,
+    error: "",
+  };
+  renderByocModal();
+  if (!isHostedMode()) {
+    try {
+      await loadCapabilities();
+      const st = await api("/api/byoc/status");
+      if (state.capabilities) state.capabilities.byoc = st;
+      if (state.byocModal) {
+        state.byocModal.status = st;
+        state.byocModal.capGb = String(st.cap_gb ?? 9.0);
+        state.byocModal.autoSync = st.auto_sync !== false;
+        renderByocModal();
+      }
+    } catch (_) {}
+  }
+}
+
+async function submitByocConnect() {
+  const bm = state.byocModal;
+  if (!bm || bm.busy) return;
+  _syncByocModalInputsToState();
+  bm.busy = true;
+  bm.error = "";
+  renderByocModal();
+  try {
+    const payload = {
+      account_id: String(bm.accountId || "").trim(),
+      bucket_name: String(bm.bucketName || "").trim(),
+      access_key_id: String(bm.accessKeyId || "").trim(),
+      secret_access_key: String(bm.secretAccessKey || "").trim(),
+      cap_gb: Number(bm.capGb || 9.0),
+      auto_sync: Boolean(bm.autoSync),
+    };
+    if (bm.readAccessKeyId || bm.readSecretAccessKey) {
+      payload.read_access_key_id = String(bm.readAccessKeyId || "").trim();
+      payload.read_secret_access_key = String(bm.readSecretAccessKey || "").trim();
+    }
+    const res = await api("/api/byoc/connect", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    if (state.capabilities) state.capabilities.byoc = res;
+    if (state.byocModal) {
+      state.byocModal.status = res;
+      state.byocModal.busy = false;
+      state.byocModal.secretAccessKey = "";
+      state.byocModal.readSecretAccessKey = "";
+      renderByocModal();
+    }
+    if (typeof renderStatusPopover === "function") renderStatusPopover();
+    if (state.activeView === "matches" && typeof renderMatchList === "function") renderMatchList();
+    toast(`Connected to R2 bucket "${res.bucket_name}"! CORS configured automatically.`);
+  } catch (err) {
+    if (state.byocModal) {
+      state.byocModal.busy = false;
+      state.byocModal.error = err.message;
+      renderByocModal();
+    }
+    toast("R2 connection failed: " + err.message);
+  }
+}
+
+async function saveByocSettingsFromModal() {
+  const bm = state.byocModal;
+  if (!bm || bm.busy) return;
+  _syncByocModalInputsToState();
+  bm.busy = true;
+  bm.error = "";
+  renderByocModal();
+  try {
+    const res = await api("/api/byoc/settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        auto_sync: Boolean(bm.autoSync),
+        cap_gb: Number(bm.capGb || 9.0),
+      }),
+    });
+    if (state.capabilities) state.capabilities.byoc = res;
+    if (state.byocModal) {
+      state.byocModal.status = res;
+      state.byocModal.busy = false;
+      renderByocModal();
+    }
+    if (typeof renderStatusPopover === "function") renderStatusPopover();
+    toast("Mobile Replay Sync settings saved");
+  } catch (err) {
+    if (state.byocModal) {
+      state.byocModal.busy = false;
+      state.byocModal.error = err.message;
+      renderByocModal();
+    }
+    toast("Could not save settings: " + err.message);
+  }
+}
+
+async function triggerByocSyncNow(quarkId = null, btnEl = null) {
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = "Syncing...";
+  }
+  try {
+    const body = quarkId ? { quark_id: quarkId } : { limit: 5 };
+    const res = await api("/api/byoc/sync", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (res.status && state.capabilities) {
+      state.capabilities.byoc = res.status;
+    }
+    if (state.byocModal && res.status) {
+      state.byocModal.status = res.status;
+      renderByocModal();
+    }
+    toast(quarkId ? "Syncing match to your R2 bucket..." : "Syncing recent matches to your R2 bucket...");
+    setTimeout(async () => {
+      try {
+        const st = await api("/api/byoc/status");
+        if (state.capabilities) state.capabilities.byoc = st;
+        if (state.byocModal) { state.byocModal.status = st; renderByocModal(); }
+        if (typeof renderStatusPopover === "function") renderStatusPopover();
+        if (state.activeView === "matches" && typeof renderMatchList === "function") renderMatchList();
+      } catch (_) {}
+    }, 3000);
+  } catch (err) {
+    toast("Sync failed: " + err.message);
+  } finally {
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.textContent = "☁ Sync";
+    }
+  }
+}
+
+async function disconnectByocFromModal() {
+  if (!confirm("Disconnect Mobile Replay Sync? Your local PC replays and cloud notes will not be deleted.")) return;
+  const bm = state.byocModal;
+  if (bm) { bm.busy = true; bm.error = ""; renderByocModal(); }
+  try {
+    const res = await api("/api/byoc/config", { method: "DELETE" });
+    if (state.capabilities) state.capabilities.byoc = res;
+    if (state.byocModal) {
+      state.byocModal.status = res;
+      state.byocModal.busy = false;
+      renderByocModal();
+    }
+    if (typeof renderStatusPopover === "function") renderStatusPopover();
+    if (state.activeView === "matches" && typeof renderMatchList === "function") renderMatchList();
+    toast("Mobile Replay Sync disconnected");
+  } catch (err) {
+    if (state.byocModal) {
+      state.byocModal.busy = false;
+      state.byocModal.error = err.message;
+      renderByocModal();
+    }
+    toast("Disconnect failed: " + err.message);
+  }
 }
 
 // ---------- THEME (LIGHT / DARK) ----------

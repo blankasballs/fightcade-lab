@@ -695,7 +695,7 @@ async function loadRoundOverlay(r) {
     if (stTxt) {
       stTxt.textContent = canGen
         ? ""
-        : (!hasGrouflon ? "Hitboxes require Grouflon (optional)" : "No overlay data");
+        : (isHostedMode() ? "No overlay data" : (!hasGrouflon ? "Hitboxes require Grouflon (optional)" : "No overlay data"));
     }
     syncGrouflonGuideUi();
     return;

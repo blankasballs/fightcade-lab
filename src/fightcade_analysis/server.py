@@ -99,6 +99,16 @@ from fightcade_analysis.select_queue import (
     update_queue_item_status,
 )
 from fightcade_analysis.asset_installer import get_onboarding_status, install_fast_fbneo, update_onboarding_state
+from fightcade_analysis.byoc_r2 import (
+    ByocCloudAuthError,
+    ByocError,
+    ByocNotConnectedError,
+    connect_byoc,
+    disconnect_byoc,
+    get_byoc_status,
+    trigger_background_byoc_sync,
+    update_byoc_settings,
+)
 from fightcade_analysis.companion_bridge import (
     build_pna_cors_headers,
     complete_pairing,
@@ -338,6 +348,7 @@ def compute_capabilities(
     disk_cache = get_mobile_replays_disk_usage(data_root)
     w_status = watcher.status() if watcher is not None else {}
     pairing_st = get_pairing_state(data_root)
+    byoc_st = get_byoc_status(data_root)
     return {
         "ok": True,
         "mode": "local_companion",
@@ -357,6 +368,20 @@ def compute_capabilities(
         "companion_paired": bool(pairing_st.get("paired", False)),
         "has_cloud_token": bool(pairing_st.get("has_cloud_token", False)),
         "cloud_base_url": str(pairing_st.get("cloud_base_url") or get_cloud_base_url()),
+        "byoc": {
+            "connected": bool(byoc_st.get("connected", False)),
+            "bucket_name": byoc_st.get("bucket_name"),
+            "account_id_masked": byoc_st.get("account_id_masked"),
+            "access_key_id_masked": byoc_st.get("access_key_id_masked"),
+            "has_separate_read_token": bool(byoc_st.get("has_separate_read_token", False)),
+            "auto_sync": bool(byoc_st.get("auto_sync", True)),
+            "cap_gb": float(byoc_st.get("cap_gb", 9.0)),
+            "used_bytes": int(byoc_st.get("used_bytes", 0)),
+            "synced_count": int(byoc_st.get("synced_count", 0)),
+            "synced_quark_ids": list(byoc_st.get("synced_quark_ids") or []),
+            "syncing": bool(byoc_st.get("syncing", False)),
+            "last_error": byoc_st.get("last_error"),
+        },
         "disk_cache": disk_cache,
         "environment": env_info,
     }
@@ -808,6 +833,10 @@ def make_handler(
                 self._send_json(HTTPStatus.OK, get_caps())
                 return
 
+            if req_path == "/api/byoc/status":
+                self._send_json(HTTPStatus.OK, get_byoc_status(data_root))
+                return
+
             if req_path == "/api/settings":
                 self._send_json(
                     HTTPStatus.OK,
@@ -1166,6 +1195,8 @@ def make_handler(
                 "/api/companion/unpair",
                 "/api/watcher/pause",
                 "/api/onboarding",
+                "/api/byoc/connect",
+                "/api/byoc/sync",
             }
             if req_path not in allowed_post and not m_ov and not m_pl_items and not m_pl_drills:
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Unknown API endpoint"}, close_conn=True)
@@ -1252,6 +1283,52 @@ def make_handler(
                     self._send_json(HTTPStatus.OK, {"ok": True, "install": res, "onboarding": get_onboarding_status(data_root)})
                     return
                 self._send_json(HTTPStatus.OK, update_onboarding_state(payload, data_root))
+                return
+
+            if req_path == "/api/byoc/connect":
+                try:
+                    status = connect_byoc(payload, data_dir=data_root)
+                except ByocCloudAuthError as exc:
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED,
+                        {"ok": False, "code": exc.code or "cloud_not_connected", "error": str(exc)},
+                    )
+                    return
+                except ByocError as exc:
+                    st = exc.status_code if 400 <= exc.status_code <= 599 else 502
+                    err_doc: dict[str, Any] = {"ok": False, "error": str(exc)}
+                    if exc.code:
+                        err_doc["code"] = exc.code
+                    self._send_json(st, err_doc)
+                    return
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                    return
+                self._send_json(HTTPStatus.OK, status)
+                return
+
+            if req_path == "/api/byoc/sync":
+                qid_raw = str(payload.get("quark_id") or "").strip() or None
+                try:
+                    limit_val = int(payload.get("limit", 5))
+                except (TypeError, ValueError):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "limit must be an integer"})
+                    return
+                res = trigger_background_byoc_sync(data_root, quark_id=qid_raw, limit=limit_val)
+                if not res.get("ok"):
+                    reason = res.get("reason")
+                    if reason == "cloud_not_connected":
+                        self._send_json(
+                            HTTPStatus.UNAUTHORIZED,
+                            {"ok": False, "code": "cloud_not_connected", "error": "Connect your Fightcade Lab cloud account first."},
+                        )
+                        return
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"ok": False, "code": reason or "byoc_not_connected", "error": "BYOC Cloudflare R2 is not configured yet."},
+                    )
+                    return
+                self._send_json(HTTPStatus.OK, {**res, "status": get_byoc_status(data_root)})
                 return
 
             if m_ov:
@@ -1736,6 +1813,28 @@ def make_handler(
                 self._reject_bad_host(drain_body=True)
                 return
             req_path = unquote(urlsplit(self.path).path)
+            if req_path == "/api/byoc/settings":
+                payload = self._read_json_body(req_path=req_path)
+                if payload is None:
+                    return
+                try:
+                    status = update_byoc_settings(payload, data_dir=data_root)
+                except ByocNotConnectedError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "code": exc.code, "error": str(exc)})
+                    return
+                except ByocCloudAuthError as exc:
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "code": exc.code, "error": str(exc)})
+                    return
+                except ByocError as exc:
+                    st = exc.status_code if 400 <= exc.status_code <= 599 else 502
+                    self._send_json(st, {"ok": False, "error": str(exc)})
+                    return
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                    return
+                self._send_json(HTTPStatus.OK, status)
+                return
+
             if req_path == "/api/settings":
                 payload = self._read_json_body(req_path=req_path)
                 if payload is None:
@@ -1843,6 +1942,12 @@ def make_handler(
                 self._reject_bad_host()
                 return
             req_path = unquote(urlsplit(self.path).path)
+            if req_path == "/api/byoc/config":
+                if not self._is_same_origin():
+                    self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "Cross-origin API request blocked"}, close_conn=True)
+                    return
+                self._send_json(HTTPStatus.OK, disconnect_byoc(data_dir=data_root))
+                return
             m_ann = _ANN_ITEM_API_RE.match(req_path)
             m_goal = _GOAL_ITEM_API_RE.match(req_path)
             m_pl = _PLAYLIST_ITEM_API_RE.match(req_path)
