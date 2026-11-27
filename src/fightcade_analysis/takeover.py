@@ -28,7 +28,11 @@ from fightcade_analysis.clip_renderer import (
     resolve_takeover_fbneo_exe,
 )
 from fightcade_analysis.companion_bridge import lookup_remote_fightcade_meta
-from fightcade_analysis.env_config import build_fbneo_cmdline, ensure_fbneo_config_inheritance
+from fightcade_analysis.env_config import (
+    build_fbneo_cmdline,
+    ensure_fbneo_config_inheritance,
+    validate_stream_target,
+)
 from fightcade_analysis.fetch_replays import resolve_stream_target
 from fightcade_analysis.ota_lua import resolve_lua_script
 
@@ -66,6 +70,100 @@ def sanitize_label(label: Any) -> str:
     text = str(label or "").replace('"', "'").replace("\r", " ").replace("\n", " ").replace("\t", " ")
     text = " ".join(text.split())
     return text[:120]
+
+
+_NOTE_UNICODE_TRANSLATIONS = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u2014": "-",
+        "\u2013": "-",
+        "\u2212": "-",
+        "\u2192": "->",
+        "\u2190": "<-",
+        "\u2194": "<->",
+        "\u2026": "...",
+        "\u00a0": " ",
+        "\u2022": "-",
+        "\u00b7": "-",
+    }
+)
+
+_GENERIC_NOTE_LABELS = frozenset(
+    {
+        "mistake",
+        "question",
+        "good play",
+        "opp habit",
+        "note",
+        "moment",
+        "select mark",
+        "set takeaway",
+        "pro clip",
+        "top-rank clip",
+        "query sequence",
+        "replay takeover",
+    }
+)
+_GENERIC_NOTE_PATTERNS = (
+    re.compile(r"^manual selection gf\d+", re.IGNORECASE),
+    re.compile(r"^in-game select mark #\d+\b", re.IGNORECASE),
+    re.compile(r"^marked live during match\b", re.IGNORECASE),
+)
+
+
+def sanitize_note(note: Any, max_len: int = 600) -> str:
+    """Normalize coaching notes for FBNeo's ASCII-only `gui.text`, preserving line breaks."""
+    if note is None:
+        return ""
+    text = str(note).replace("\r\n", "\n").replace("\r", "\n")
+    text = text.translate(_NOTE_UNICODE_TRANSLATIONS)
+    text = text.replace("\t", " ")
+    # Keep only printable ASCII (0x20..0x7E) and newlines
+    text = "".join(ch for ch in text if ch == "\n" or 32 <= ord(ch) <= 126)
+
+    cleaned_lines: list[str] = []
+    blank_run = 0
+    for raw_line in text.split("\n"):
+        line = " ".join(raw_line.split())
+        if not line:
+            blank_run += 1
+            if blank_run <= 1 and cleaned_lines:
+                cleaned_lines.append("")
+        else:
+            blank_run = 0
+            cleaned_lines.append(line)
+
+    while cleaned_lines and not cleaned_lines[-1]:
+        cleaned_lines.pop()
+
+    result = "\n".join(cleaned_lines).strip()
+    if len(result) > max_len:
+        result = result[:max_len].rstrip()
+    return result
+
+
+def encode_env_note(note: str) -> str:
+    """Encode a sanitized multiline note for single-line Windows env var transport (`FC_NOTE`)."""
+    if not note:
+        return ""
+    return note.replace("\\", "\\\\").replace("\n", "\\n")
+
+
+def _is_generic_fallback_label(text: str) -> bool:
+    s = " ".join(str(text or "").split()).strip()
+    if not s:
+        return True
+    low = s.lower()
+    if low in _GENERIC_NOTE_LABELS:
+        return True
+    return any(pat.match(s) for pat in _GENERIC_NOTE_PATTERNS)
 
 
 def validate_takeover_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -128,6 +226,13 @@ def validate_takeover_payload(payload: dict[str, Any]) -> dict[str, Any]:
     auto_loop = bool(payload.get("auto_loop", True))
     label = sanitize_label(payload.get("label", ""))
 
+    if "note" in payload:
+        note = sanitize_note(payload.get("note"))
+    elif label and not _is_generic_fallback_label(label):
+        note = sanitize_note(label)
+    else:
+        note = ""
+
     speed_raw = payload.get("speed", 1.0)
     try:
         speed = float(speed_raw) if speed_raw not in (None, "") else 1.0
@@ -164,6 +269,18 @@ def validate_takeover_payload(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             raise ValueError("start_paused must be a boolean")
 
+    parent_moment_id = str(payload.get("parent_moment_id") or "").strip()
+    if parent_moment_id and not _SELECTION_ID_RE.match(parent_moment_id):
+        raise ValueError("Invalid parent_moment_id format")
+
+    round_id_raw = payload.get("round_id", 0)
+    try:
+        round_id = int(round_id_raw) if round_id_raw not in (None, "") else 0
+    except (TypeError, ValueError) as exc:
+        raise ValueError("round_id must be an integer") from exc
+    if round_id < 0 or round_id > 999:
+        raise ValueError("round_id must be between 1 and 999")
+
     return {
         "quark_id": quark_id,
         "frame": frame,
@@ -173,11 +290,14 @@ def validate_takeover_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "player": player,
         "mode": mode,
         "selection_id": selection_id,
+        "parent_moment_id": parent_moment_id,
+        "round_id": round_id,
         "game_id": game_id,
         "lead_frames": lead_frames,
         "takeover_lead": takeover_lead,
         "auto_loop": auto_loop,
         "label": label,
+        "note": note,
         "speed": round(speed, 2),
         "speed_scope": speed_scope,
         "loop_delay": loop_delay,
@@ -185,9 +305,20 @@ def validate_takeover_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _ensure_within_data_dir(path: Path, data_dir: Path, label: str) -> Path:
+    """Ensure a file path loaded from local JSONL metadata stays strictly inside `data_dir`."""
+    resolved = path.resolve()
+    root = data_dir.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"{label} path escapes data_dir: {path}") from exc
+    return resolved
+
+
 def _load_bookmark(selection_id: str, data_dir: Path) -> dict[str, Any]:
     sel_dir = data_dir / "selections"
-    candidates = [sel_dir / "queue.jsonl", sel_dir / "bookmarks.jsonl"]
+    candidates = [sel_dir / "queue.jsonl", sel_dir / "bookmarks.jsonl", sel_dir / "annotations.jsonl"]
     existing = [p for p in candidates if p.exists()]
     if not existing:
         raise FileNotFoundError(f"No selections found in: {sel_dir}")
@@ -265,6 +396,10 @@ class TakeoverManager:
         player = req["player"]
         mode = req["mode"]
         label = req["label"]
+        note = req["note"]
+        parent_moment_id = req["parent_moment_id"]
+        round_id = req["round_id"]
+        explicit_note_provided = "note" in raw_payload
         explicit_takeover_gf = 0
         savestate_override: Path | None = None
         inputs_override: Path | None = None
@@ -274,13 +409,31 @@ class TakeoverManager:
             quark_id = str(bm["quark_id"])
             frame = int(bm["start_gf"])
             player = int(bm.get("perspective", player))
+            if not round_id and bm.get("round_id"):
+                try:
+                    round_id = int(bm["round_id"])
+                except (TypeError, ValueError):
+                    round_id = 0
+            if not parent_moment_id:
+                if str(bm.get("source") or "") == "takeover_response":
+                    parent_moment_id = str(bm.get("parent_moment_id") or "").strip()
+                else:
+                    parent_moment_id = req["selection_id"]
             if bm.get("savestate"):
-                savestate_override = Path(str(bm["savestate"]))
+                savestate_override = _ensure_within_data_dir(
+                    Path(str(bm["savestate"])), self.data_dir, "savestate"
+                )
             if bm.get("inputs"):
-                inputs_override = Path(str(bm["inputs"]))
+                inputs_override = _ensure_within_data_dir(
+                    Path(str(bm["inputs"])), self.data_dir, "inputs"
+                )
+            bm_note_raw = str(bm.get("note") or "").strip()
+            if not explicit_note_provided and not note:
+                bm_note_clean = sanitize_note(bm_note_raw)
+                if bm_note_clean and not _is_generic_fallback_label(bm_note_clean):
+                    note = bm_note_clean
             if not label:
-                note = str(bm.get("note") or "").strip()
-                suffix = f" - {note}" if note else ""
+                suffix = f" - {bm_note_raw}" if bm_note_raw else ""
                 label = sanitize_label(f"Manual Selection gf{bm['start_gf']}..gf{bm['end_gf']}{suffix}")
             explicit_takeover_gf = int(bm.get("takeover_gf") or (frame + 20))
 
@@ -288,14 +441,20 @@ class TakeoverManager:
         cached_fs = savestate_override or (savestates_dir / f"{quark_id}_gf{frame}.fs")
         inputs_file = inputs_override or (savestates_dir / f"{quark_id}_gf{frame}.inputs")
 
-        # Ad-hoc offline `<2s` `.fs` bake for Replay Studio's "▶ Practice Takeover" when replay_cache exists
+        # Ad-hoc offline `<2s` `.fs` bake for lazy-bake "▶ Practice" when replay_cache exists.
+        # Keyed by BOTH start_gf and end_gf so editing a Moment's range never reuses a stale `.fs`/`.inputs`.
         baked_ad_hoc = False
-        if not cached_fs.exists() and req.get("bake_if_missing") and quark_id:
+        has_explicit_range = (
+            not req["selection_id"]
+            and int(req.get("start_gf") or 0) > 0
+            and int(req.get("end_gf") or 0) > int(req.get("start_gf") or 0)
+        )
+        if req.get("bake_if_missing") and quark_id and (has_explicit_range or not cached_fs.exists()):
             s_gf = int(req.get("start_gf") or 0) or max(1, frame - int(req.get("lead_frames") or 120))
             e_gf = int(req.get("end_gf") or 0) or (frame + 90)
             if e_gf <= s_gf:
                 e_gf = s_gf + 150
-            adhoc_id = f"adhoc_{quark_id.split('-')[-1]}_gf{s_gf}"
+            adhoc_id = f"adhoc_{quark_id.split('-')[-1]}_gf{s_gf}_{e_gf}"
             adhoc_fs = self.data_dir / "selections" / f"{adhoc_id}.fs"
             adhoc_inp = self.data_dir / "selections" / f"{adhoc_id}.inputs"
             if adhoc_fs.exists() and adhoc_fs.stat().st_size > 4096:
@@ -349,6 +508,8 @@ class TakeoverManager:
                     data_dir=self.data_dir,
                 )
 
+            export_dir = (self.data_dir / "selections" / "takeover_exports").resolve()
+            export_dir.mkdir(parents=True, exist_ok=True)
             env["FC_INPUTS_PATH"] = str(inputs_file.resolve()) if inputs_file.exists() else ""
             env["FC_SAVESTATE_PATH"] = fs_str
             env["FC_TARGET_FRAME"] = str(frame)
@@ -358,6 +519,11 @@ class TakeoverManager:
             env["FC_AUTO_LOOP"] = "1" if req["auto_loop"] else "0"
             env["FC_WATCH_ONLY"] = "1" if mode == "watch" else "0"
             env["FC_LABEL"] = label
+            env["FC_NOTE"] = encode_env_note(note)
+            env["FC_PARENT_MOMENT_ID"] = parent_moment_id
+            env["FC_QUARK_ID"] = quark_id
+            env["FC_ROUND_ID"] = str(round_id) if round_id > 0 else ""
+            env["FC_EXPORT_DIR"] = str(export_dir)
             env["FC_SPEED"] = f"{req['speed']:.2f}"
             if req["speed_scope"]:
                 env["FC_SPEED_SCOPE"] = req["speed_scope"]
@@ -395,15 +561,17 @@ class TakeoverManager:
             if not stream_target:
                 remote_meta = lookup_remote_fightcade_meta(quark_id)
                 if remote_meta and remote_meta.get("stream_target"):
-                    stream_target = str(remote_meta["stream_target"]).strip()
+                    stream_target = str(remote_meta["stream_target"])
             if not stream_target:
                 stream_target = resolve_stream_target(req["game_id"], quark_id)
+            stream_target = validate_stream_target(str(stream_target or ""))
 
             savestates_dir.mkdir(parents=True, exist_ok=True)
             env["FC_TARGET_FRAME"] = str(frame)
             env["FC_LEAD_FRAMES"] = str(req["lead_frames"])
             env["FC_TAKEOVER_MODE"] = mode
             env["FC_LABEL"] = label
+            env["FC_NOTE"] = encode_env_note(note)
             env["FC_SAVESTATE_PATH"] = str(cached_fs)
 
             cmd_str = build_fbneo_cmdline(
@@ -450,6 +618,7 @@ class TakeoverManager:
             "mode": mode,
             "speed": req["speed"],
             "label": label,
+            "note": note,
             "replaced_previous": replaced,
             "desktop": desktop_name,
             "interactive_desktop": is_interactive,
@@ -472,7 +641,7 @@ def render_takeover_buttons_html(
     selection_id: str | None = None,
 ) -> str:
     """Render primary `Launch Takeover` button + secondary `Copy` fallback button."""
-    btn_text = "&#9654; Launch Pro Takeover" if is_pro else "&#9654; Launch Takeover"
+    btn_text = "&#9654; Launch Top-Rank Takeover" if is_pro else "&#9654; Launch Takeover"
     sel_attr = f' data-selection-id="{html.escape(selection_id, quote=True)}"' if selection_id else ""
     safe_label = sanitize_label(label)
     return (

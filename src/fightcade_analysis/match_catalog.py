@@ -640,6 +640,7 @@ def list_matches(
             "has_round_cache": has_round_cache,
             "round_cache_count": len(cached_rounds),
             "has_mobile_video": has_mobile_video,
+            "in_progress": bool(manifest_doc and manifest_doc.get("in_progress")),
             "mobile_round_count": len(manifest_doc.get("rounds") or []) if manifest_doc else 0,
             "has_overlay_data": has_overlay_data,
             "preview_video_url": preview_video_url,
@@ -647,9 +648,9 @@ def list_matches(
             "report_url": reports_by_qid.get(qid),
             "notes_count": notes_n,
             "drills_count": drills_n,
-            "select_marks_count": len(sel_marks),
-            "select_mark_rounds": sel_rounds,
-            "first_select_mark": first_sel,
+            "select_marks_count": 0,
+            "select_mark_rounds": [],
+            "first_select_mark": None,
             "has_set_note": bool(set_note_text),
             "set_note_preview": set_note_text[:100],
             "job": job,
@@ -745,6 +746,7 @@ class ProcessingQueue:
         self._pending: deque[dict[str, Any]] = deque()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._stream_timestamps: deque[float] = deque()
+        self._next_stream_allowed_at: float | None = None
         self._thread: threading.Thread | None = None
 
     def _prune_stream_window_locked(self, now: float) -> None:
@@ -867,6 +869,31 @@ class ProcessingQueue:
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
             vals = [dict(j) for j in self._jobs.values()]
+        for j in vals:
+            qid = str(j.get("quark_id") or "")
+            if not qid:
+                continue
+            if j.get("state") in ("running", "queued", "paused"):
+                mf_p = mobile_manifest_path(qid, data_dir=self.data_dir)
+                playable = 0
+                if mf_p.is_file():
+                    try:
+                        doc = json.loads(mf_p.read_text(encoding="utf-8"))
+                        playable = len(doc.get("rounds") or [])
+                    except Exception:  # noqa: BLE001
+                        playable = 0
+                j["playable_rounds"] = playable
+                if not j.get("opp_name"):
+                    try:
+                        meta = lookup_replay_metadata(qid, data_dir=self.data_dir)
+                        persp = int(j.get("perspective") or 1)
+                        opp = str(meta.get("p2_name" if persp == 1 else "p1_name") or "").strip()
+                        if opp and not is_placeholder_name(opp):
+                            j["opp_name"] = opp
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                j.setdefault("playable_rounds", int(j.get("progress_done") or 0) if j.get("state") == "done" else 0)
         vals.sort(key=lambda j: str(j.get("updated_at") or ""), reverse=True)
         return vals[:50]
 
@@ -920,6 +947,20 @@ class ProcessingQueue:
                                 cap=self.max_streams_per_hour,
                                 used=len(self._stream_timestamps),
                             )
+                # Wait any remaining Fightcade stewardship cooldown BEFORE starting the next online stream
+                # (never stall the user for 10–15s AFTER a finished match when no next stream is running!)
+                if self._next_stream_allowed_at is not None:
+                    wait_rem = self._next_stream_allowed_at - float(self._clock_fn())
+                    if wait_rem > 0:
+                        self._update(
+                            qid,
+                            state="running",
+                            phase="cooldown",
+                            message=f"Waiting {int(round(wait_rem))}s stream cooldown...",
+                        )
+                        if self._stop_evt.wait(wait_rem):
+                            return
+
                 self._update(
                     qid,
                     state="running",
@@ -958,7 +999,9 @@ class ProcessingQueue:
                 self._scan_fn(qid, **scan_kwargs)
                 cooldown_wait = self._compute_stream_cooldown()
                 if cooldown_wait > 0:
-                    self._stop_evt.wait(cooldown_wait)
+                    self._next_stream_allowed_at = float(self._clock_fn()) + cooldown_wait
+                else:
+                    self._next_stream_allowed_at = None
 
             if not self._wait_if_live_match(qid):
                 return
@@ -989,7 +1032,8 @@ class ProcessingQueue:
                     out_dir = mf_path.parent
                     cached_cnt = len(list_cached_round_savestates(qid, data_dir=self.data_dir))
                     if (
-                        len(rounds_doc) > 0
+                        not doc.get("in_progress")
+                        and len(rounds_doc) > 0
                         and (cached_cnt == 0 or len(rounds_doc) >= cached_cnt)
                         and all(
                             (out_dir / str(r.get("filename") or f"r{int(r.get('round_id', 0)):02d}.mp4")).is_file()

@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import threading
 from typing import Any, Callable
 import uuid
@@ -26,11 +27,16 @@ from fightcade_analysis.round_renderer import bake_drill_savestate, mobile_manif
 from fightcade_analysis.select_queue import (
     _read_jsonl,
     _write_jsonl_atomic,
+    update_queue_item,
     update_queue_item_status,
     upsert_queue_items,
 )
 
 PRESET_TAGS: tuple[str, ...] = (
+    "Mistake",
+    "Question",
+    "Good Play",
+    "Opp Habit",
     "Anti-Air",
     "Whiff Punish",
     "Throw / Tech",
@@ -40,10 +46,9 @@ PRESET_TAGS: tuple[str, ...] = (
     "Meter / Super",
     "Footsies",
     "Combo / Confirm",
-    "Good Decision",
 )
 
-VALID_KINDS: frozenset[str] = frozenset({"mistake", "question", "good_play", "opp_habit", "note"})
+VALID_KINDS: frozenset[str] = frozenset({"mistake", "question", "good_play", "opp_habit", "note", "response"})
 _QUARK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
 _ANN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,128}$")
 
@@ -227,12 +232,28 @@ def _sync_annotation_to_queue(
         "status": "pending",
     }
 
-    # If item already existed in queue (e.g. re-enabled after dismiss), ensure status=pending
-    upsert_queue_items([queue_item], data_dir=data_root)
-    try:
-        update_queue_item_status(ann_id, "pending", data_dir=data_root)
-    except Exception:  # noqa: BLE001
-        pass
+    # If item already existed in queue (e.g. re-enabled or range edited), sync updated bounds/metadata + pending status
+    added = upsert_queue_items([queue_item], data_dir=data_root)
+    if not added:
+        try:
+            update_queue_item(
+                ann_id,
+                {
+                    "start_gf": queue_item["start_gf"],
+                    "end_gf": queue_item["end_gf"],
+                    "takeover_gf": queue_item["takeover_gf"],
+                    "kind": queue_item["kind"],
+                    "tags": queue_item["tags"],
+                    "note": queue_item["note"],
+                    "status": "pending",
+                },
+                data_dir=data_root,
+            )
+        except Exception:  # noqa: BLE001
+            try:
+                update_queue_item_status(ann_id, "pending", data_dir=data_root)
+            except Exception:  # noqa: BLE001
+                pass
 
     baker = bake_fn or bake_drill_savestate
 
@@ -335,12 +356,38 @@ def create_annotation(
     playlist_ids = _sanitize_id_list(payload.get("playlist_ids"))
 
     short_qid = qid.split("-")[-1] if "-" in qid else qid[-6:]
-    ann_id = f"mob_{short_qid}_r{round_id:02d}_gf{anchor_gf}_{uuid.uuid4().hex[:4]}"
+    raw_id = str(payload.get("id") or "").strip()
+    if raw_id:
+        if not _ANN_ID_RE.match(raw_id):
+            raise ValueError("Invalid annotation id format")
+        ann_id = raw_id
+    else:
+        ann_id = f"mob_{short_qid}_r{round_id:02d}_gf{anchor_gf}_{uuid.uuid4().hex[:4]}"
+
+    source = str(payload.get("source") or "annotation").strip().lower()
+    if source not in ("annotation", "takeover_response"):
+        source = "annotation"
+
+    raw_parent = str(payload.get("parent_moment_id") or "").strip()
+    if raw_parent and not _ANN_ID_RE.match(raw_parent):
+        raise ValueError("Invalid parent_moment_id format")
+    parent_moment_id = raw_parent or None
+
+    response_clip_url = str(payload.get("response_clip_url") or "").strip() or None
+    response_overlay_url = str(payload.get("response_overlay_url") or "").strip() or None
+    savestate_str = str(payload.get("savestate") or "").strip() or None
+    inputs_str = str(payload.get("inputs") or "").strip() or None
+    hp_delta_self = int(payload["hp_delta_self"]) if payload.get("hp_delta_self") not in (None, "") else None
+    hp_delta_opp = int(payload["hp_delta_opp"]) if payload.get("hp_delta_opp") not in (None, "") else None
+    frame_count = int(payload["frame_count"]) if payload.get("frame_count") not in (None, "") else None
+
     now_iso = datetime.now().isoformat(timespec="seconds")
 
     record: dict[str, Any] = {
         "id": ann_id,
         "owner": owner,
+        "source": source,
+        "parent_moment_id": parent_moment_id,
         "quark_id": qid,
         "round_id": round_id,
         "perspective": perspective,
@@ -355,11 +402,25 @@ def create_annotation(
         "playlist_ids": playlist_ids,
         "note": note,
         "queued_drill": queued_drill,
-        "drill_status": "baking" if queued_drill else "none",
+        "drill_status": "baking" if queued_drill else ("ready" if (source == "takeover_response" and savestate_str) else "none"),
         "drill_error": None,
         "created_at": now_iso,
         "updated_at": now_iso,
     }
+    if response_clip_url is not None:
+        record["response_clip_url"] = response_clip_url
+    if response_overlay_url is not None:
+        record["response_overlay_url"] = response_overlay_url
+    if savestate_str is not None:
+        record["savestate"] = savestate_str
+    if inputs_str is not None:
+        record["inputs"] = inputs_str
+    if hp_delta_self is not None:
+        record["hp_delta_self"] = hp_delta_self
+    if hp_delta_opp is not None:
+        record["hp_delta_opp"] = hp_delta_opp
+    if frame_count is not None:
+        record["frame_count"] = frame_count
 
     with _ANN_LOCK:
         path = annotations_jsonl_path(data_root)
@@ -411,11 +472,22 @@ def update_annotation(
                 if k not in VALID_KINDS:
                     raise ValueError(f"Invalid kind: {k}")
                 it["kind"] = k
-            if "start_gf" in patch and patch["start_gf"] not in (None, ""):
-                it["start_gf"] = max(1, int(patch["start_gf"]))
-                it["is_range"] = True
-            if "end_gf" in patch and patch["end_gf"] not in (None, ""):
-                it["end_gf"] = max(int(it["start_gf"]) + 1, int(patch["end_gf"]))
+            has_start = "start_gf" in patch and patch["start_gf"] not in (None, "")
+            has_end = "end_gf" in patch and patch["end_gf"] not in (None, "")
+            if has_start or has_end:
+                if isinstance(patch.get("start_gf"), bool) or isinstance(patch.get("end_gf"), bool):
+                    raise ValueError("start_gf and end_gf must be integers")
+                try:
+                    new_start = int(patch["start_gf"]) if has_start else old_start
+                    new_end = int(patch["end_gf"]) if has_end else old_end
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("start_gf and end_gf must be integers") from exc
+                if new_start < 1 or new_end < 1:
+                    raise ValueError("start_gf and end_gf must be positive integers")
+                if new_end <= new_start:
+                    raise ValueError("end_gf must be greater than start_gf")
+                it["start_gf"] = new_start
+                it["end_gf"] = new_end
                 it["is_range"] = True
             if "queued_drill" in patch:
                 it["queued_drill"] = bool(patch["queued_drill"])
@@ -425,12 +497,61 @@ def update_annotation(
                 it["goal_ids"] = _sanitize_id_list(patch["goal_ids"])
             if "playlist_ids" in patch:
                 it["playlist_ids"] = _sanitize_id_list(patch["playlist_ids"])
+            if "cloud_moment_id" in patch:
+                val = str(patch["cloud_moment_id"] or "").strip()[:128]
+                it["cloud_moment_id"] = val or None
+            if "cloud_share_token" in patch:
+                val = str(patch["cloud_share_token"] or "").strip()[:128]
+                it["cloud_share_token"] = val or None
+            if "cloud_share_url" in patch:
+                val = str(patch["cloud_share_url"] or "").strip()[:512]
+                it["cloud_share_url"] = val or None
+            if "cloud_visibility" in patch:
+                raw_vis = str(patch["cloud_visibility"] or "").strip().lower()
+                if raw_vis and raw_vis not in ("private", "unlisted"):
+                    raise ValueError("cloud_visibility must be 'private' or 'unlisted'")
+                it["cloud_visibility"] = raw_vis or None
+            if "shared_caption" in patch:
+                it["shared_caption"] = _sanitize_note(patch["shared_caption"])[:1000]
+            if "include_note_on_share" in patch:
+                it["include_note_on_share"] = bool(patch["include_note_on_share"])
+            if "hide_player_names" in patch:
+                it["hide_player_names"] = bool(patch["hide_player_names"])
             it.setdefault("owner", "")
             it.setdefault("goal_ids", [])
             it.setdefault("playlist_ids", [])
 
             new_queued = bool(it.get("queued_drill", False))
             range_changed = (int(it["start_gf"]) != old_start) or (int(it["end_gf"]) != old_end)
+            if range_changed:
+                cur_start = int(it["start_gf"])
+                cur_end = int(it["end_gf"])
+                cur_anchor = int(it.get("anchor_gf") or cur_start)
+                it["takeover_gf"] = (
+                    max(cur_start + 20, min(cur_end, cur_anchor - 30))
+                    if (cur_anchor - cur_start) >= 50
+                    else min(cur_end, cur_start + 20)
+                )
+                # Invalidate any previously baked `.fs`/`.inputs` so stale bounds are never launched
+                sel_dir = data_root / "selections"
+                stale_paths: set[Path] = {
+                    sel_dir / f"{ann_id}.fs",
+                    sel_dir / f"{ann_id}.inputs",
+                }
+                for key in ("savestate", "inputs"):
+                    raw_p = str(it.get(key) or "").strip()
+                    if raw_p:
+                        stale_paths.add(Path(raw_p))
+                for sp in stale_paths:
+                    try:
+                        sp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                it["savestate"] = None
+                it["inputs"] = None
+                if not new_queued:
+                    it["drill_status"] = "none"
+                    it["drill_error"] = None
             if new_queued and (not old_queued or range_changed or it.get("drill_status") in ("none", "error")):
                 need_bake = True
                 it["drill_status"] = "baking"
@@ -465,18 +586,36 @@ def delete_annotation(ann_id: str, *, data_dir: Path = DEFAULT_DATA_DIR) -> bool
         raise ValueError("Invalid annotation id")
     data_root = data_dir.resolve()
     removed = False
+    removed_item: dict[str, Any] | None = None
     with _ANN_LOCK:
         path = annotations_jsonl_path(data_root)
         items = _read_jsonl(path)
-        kept = [it for it in items if str(it.get("id")) != str(ann_id)]
-        if len(kept) != len(items):
-            removed = True
+        kept = []
+        for it in items:
+            if str(it.get("id")) == str(ann_id):
+                removed = True
+                removed_item = it
+            else:
+                kept.append(it)
+        if removed:
             _write_jsonl_atomic(path, kept)
     if removed:
         try:
             update_queue_item_status(ann_id, "dismissed", data_dir=data_root)
         except Exception:  # noqa: BLE001
             pass
+        if removed_item and (
+            str(removed_item.get("source") or "") == "takeover_response"
+            or str(removed_item.get("response_clip_url") or "").startswith("/responses/")
+        ):
+            responses_root = (data_root / "responses").resolve()
+            resp_dir = (responses_root / str(ann_id)).resolve()
+            try:
+                resp_dir.relative_to(responses_root)
+                if resp_dir.is_dir():
+                    shutil.rmtree(resp_dir, ignore_errors=True)
+            except ValueError:
+                pass
     return removed
 
 

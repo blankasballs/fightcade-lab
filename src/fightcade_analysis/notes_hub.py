@@ -270,7 +270,7 @@ def list_collated_notes(
     *,
     username: str | None = None,
     data_dir: Path = DEFAULT_DATA_DIR,
-    include_select_marks: bool = True,
+    include_select_marks: bool = False,
 ) -> dict[str, Any]:
     """Collate moment notes, set takeaways, in-game Select marks, and manual bookmarks into one unified feed."""
     data_root = data_dir.resolve()
@@ -309,6 +309,40 @@ def list_collated_notes(
             anchor_gf=ann.get("anchor_gf"),
             data_root=data_root,
         )
+        ann_source = str(ann.get("source") or "annotation").strip().lower()
+        resp_clip_url = str(ann.get("response_clip_url") or "").strip() or None
+        resp_ov_url = str(ann.get("response_overlay_url") or "").strip() or None
+        is_response_clip = (ann_source == "takeover_response") or bool(resp_clip_url)
+        parent_moment_id = str(ann.get("parent_moment_id") or "").strip() or None
+
+        if is_response_clip and resp_clip_url:
+            resp_rel = resp_clip_url.lstrip("/")
+            resp_mp4_path = data_root / Path(resp_rel)
+            has_resp_mp4 = resp_mp4_path.is_file()
+            has_resp_ov = False
+            if resp_ov_url:
+                resp_ov_path = data_root / Path(resp_ov_url.lstrip("/"))
+                has_resp_ov = resp_ov_path.is_file()
+            n_frames = max(1, int(ann.get("frame_count") or (int(ann.get("end_gf") or 0) - int(ann.get("start_gf") or 0) + 1)))
+            resp_dur_s = round(max(0.4, (n_frames - 1) / 60.0), 3)
+            eff_has_video = has_resp_mp4
+            eff_video_url = resp_clip_url if has_resp_mp4 else None
+            eff_overlay_url = resp_ov_url if has_resp_ov else None
+            eff_round_start_gf = int(ann.get("start_gf") or 0)
+            eff_round_end_gf = int(ann.get("end_gf") or eff_round_start_gf)
+            eff_clip_start_s = 0.0
+            eff_clip_end_s = resp_dur_s
+            eff_anchor_s = 0.0
+        else:
+            eff_has_video = prev["has_video"]
+            eff_video_url = prev["video_url"]
+            eff_overlay_url = prev.get("overlay_url")
+            eff_round_start_gf = prev["round_start_gf"]
+            eff_round_end_gf = prev["round_end_gf"]
+            eff_clip_start_s = prev["clip_start_s"]
+            eff_clip_end_s = prev["clip_end_s"]
+            eff_anchor_s = prev["anchor_s"]
+
         r_label = (
             f"M{prev['match_id']} · R{prev['match_round']}"
             if prev["match_id"]
@@ -316,27 +350,36 @@ def list_collated_notes(
         )
         note_text = str(ann.get("note") or "").strip()
         fs_path = Path(str(ann.get("savestate") or "")) if ann.get("savestate") else (data_root / "selections" / f"{ann_id}.fs")
-        fs_ready = bool(ann.get("queued_drill")) and (
-            ann.get("drill_status") == "ready" or (fs_path.exists() and fs_path.stat().st_size > 4096)
+        fs_exists = fs_path.exists() and fs_path.stat().st_size > 4096
+        fs_ready = (is_response_clip and fs_exists) or (
+            bool(ann.get("queued_drill")) and (ann.get("drill_status") == "ready" or fs_exists)
         )
         notes.append(
             {
                 "id": ann_id,
-                "source": "annotation",
+                "source": "takeover_response" if is_response_clip else "annotation",
                 "entry_type": "moment",
-                "kind": str(ann.get("kind") or "note"),
+                "kind": str(ann.get("kind") or ("response" if is_response_clip else "note")),
+                "parent_moment_id": parent_moment_id,
+                "is_response_clip": is_response_clip,
+                "response_clip_url": resp_clip_url,
+                "response_overlay_url": resp_ov_url,
+                "hp_delta_self": ann.get("hp_delta_self"),
+                "hp_delta_opp": ann.get("hp_delta_opp"),
+                "frame_count": ann.get("frame_count"),
                 "tags": list(ann.get("tags") or []),
                 "owner": str(ann.get("owner") or ""),
                 "goal_ids": list(ann.get("goal_ids") or []),
                 "playlist_ids": list(ann.get("playlist_ids") or []),
                 "note": note_text,
-                "needs_note": not bool(note_text),
+                "needs_note": (not bool(note_text)) and (not is_response_clip),
                 "quark_id": qid,
                 "date": ctx["date"],
                 "date_str": ctx["date_str"],
                 "perspective": ctx["perspective"],
                 "self_player_name": ctx["self_player_name"],
                 "opp_player_name": ctx["opp_player_name"],
+                "self_rank_letter": ctx["self_rank_letter"],
                 "opp_rank_letter": ctx["opp_rank_letter"],
                 "self_char_name": ctx["self_char_name"],
                 "opp_char_name": ctx["opp_char_name"],
@@ -348,20 +391,28 @@ def list_collated_notes(
                 "start_gf": int(ann.get("start_gf") or 0),
                 "end_gf": int(ann.get("end_gf") or 0),
                 "is_range": bool(ann.get("is_range")),
-                "has_video": prev["has_video"],
+                "has_video": eff_has_video,
                 "has_set_video": ctx["has_set_video"],
-                "video_url": prev["video_url"],
-                "round_start_gf": prev["round_start_gf"],
-                "round_end_gf": prev["round_end_gf"],
+                "video_url": eff_video_url,
+                "overlay_url": eff_overlay_url,
+                "round_start_gf": eff_round_start_gf,
+                "round_end_gf": eff_round_end_gf,
                 "round_fps": prev["round_fps"],
-                "clip_start_s": prev["clip_start_s"],
-                "clip_end_s": prev["clip_end_s"],
-                "anchor_s": prev["anchor_s"],
+                "clip_start_s": eff_clip_start_s,
+                "clip_end_s": eff_clip_end_s,
+                "anchor_s": eff_anchor_s,
                 "queued_drill": bool(ann.get("queued_drill")),
                 "drill_status": str(ann.get("drill_status") or ("ready" if fs_ready else "none")),
                 "can_launch_drill": fs_ready,
                 "editable": True,
                 "deletable": True,
+                "cloud_moment_id": ann.get("cloud_moment_id"),
+                "cloud_share_token": ann.get("cloud_share_token"),
+                "cloud_share_url": ann.get("cloud_share_url"),
+                "cloud_visibility": ann.get("cloud_visibility"),
+                "shared_caption": str(ann.get("shared_caption") or ""),
+                "include_note_on_share": bool(ann.get("include_note_on_share", False)),
+                "hide_player_names": bool(ann.get("hide_player_names", False)),
                 "created_at": _format_iso_from_any(ann.get("created_at"), ctx["date_str"]),
                 "updated_at": _format_iso_from_any(ann.get("updated_at"), ctx["date_str"]),
                 "sort_ts": _sort_key_ts(ann.get("created_at"), ann.get("updated_at"), ctx["date"]),
@@ -400,6 +451,7 @@ def list_collated_notes(
                 "perspective": ctx["perspective"],
                 "self_player_name": ctx["self_player_name"],
                 "opp_player_name": ctx["opp_player_name"],
+                "self_rank_letter": ctx["self_rank_letter"],
                 "opp_rank_letter": ctx["opp_rank_letter"],
                 "self_char_name": ctx["self_char_name"],
                 "opp_char_name": ctx["opp_char_name"],
@@ -496,6 +548,7 @@ def list_collated_notes(
                     "perspective": ctx["perspective"],
                     "self_player_name": ctx["self_player_name"],
                     "opp_player_name": ctx["opp_player_name"],
+                    "self_rank_letter": ctx["self_rank_letter"],
                     "opp_rank_letter": ctx["opp_rank_letter"],
                     "self_char_name": ctx["self_char_name"],
                     "opp_char_name": ctx["opp_char_name"],
@@ -510,6 +563,7 @@ def list_collated_notes(
                     "has_video": prev["has_video"],
                     "has_set_video": ctx["has_set_video"],
                     "video_url": prev["video_url"],
+                    "overlay_url": prev.get("overlay_url"),
                     "round_start_gf": prev["round_start_gf"],
                     "round_end_gf": prev["round_end_gf"],
                     "round_fps": prev["round_fps"],
@@ -522,6 +576,13 @@ def list_collated_notes(
                     "queue_status": str(qi.get("status") or "pending"),
                     "editable": True,
                     "deletable": True,
+                    "cloud_moment_id": qi.get("cloud_moment_id"),
+                    "cloud_share_token": qi.get("cloud_share_token"),
+                    "cloud_share_url": qi.get("cloud_share_url"),
+                    "cloud_visibility": qi.get("cloud_visibility"),
+                    "shared_caption": str(qi.get("shared_caption") or ""),
+                    "include_note_on_share": bool(qi.get("include_note_on_share", False)),
+                    "hide_player_names": bool(qi.get("hide_player_names", False)),
                     "created_at": _format_iso_from_any(qi.get("created_at"), ctx["date_str"]),
                     "updated_at": _format_iso_from_any(qi.get("updated_at") or qi.get("created_at"), ctx["date_str"]),
                     "sort_ts": _sort_key_ts(qi.get("created_at"), qi.get("updated_at"), ctx["date"]),
@@ -593,6 +654,7 @@ def list_collated_notes(
                 "perspective": ctx["perspective"],
                 "self_player_name": ctx["self_player_name"],
                 "opp_player_name": ctx["opp_player_name"],
+                "self_rank_letter": ctx["self_rank_letter"],
                 "opp_rank_letter": ctx["opp_rank_letter"],
                 "self_char_name": ctx["self_char_name"],
                 "opp_char_name": ctx["opp_char_name"],
@@ -607,6 +669,7 @@ def list_collated_notes(
                 "has_video": prev["has_video"],
                 "has_set_video": ctx["has_set_video"],
                 "video_url": prev["video_url"],
+                "overlay_url": prev.get("overlay_url"),
                 "round_start_gf": prev["round_start_gf"],
                 "round_end_gf": prev["round_end_gf"],
                 "round_fps": prev["round_fps"],
@@ -627,13 +690,24 @@ def list_collated_notes(
     # Sort newest first
     notes.sort(key=lambda n: (float(n.get("sort_ts") or 0.0), str(n.get("id") or "")), reverse=True)
 
+    legacy_kind_to_tag = {
+        "mistake": "Mistake",
+        "question": "Question",
+        "good_play": "Good Play",
+        "opp_habit": "Opp Habit",
+    }
     by_kind: dict[str, int] = {}
     tag_counts: dict[str, int] = {}
     for n in notes:
         k = str(n.get("kind") or "note")
         by_kind[k] = by_kind.get(k, 0) + 1
+        seen_tags_lower: set[str] = set()
         for t in n.get("tags") or []:
             tag_counts[t] = tag_counts.get(t, 0) + 1
+            seen_tags_lower.add(str(t).lower())
+        legacy_lbl = legacy_kind_to_tag.get(k)
+        if legacy_lbl and legacy_lbl.lower() not in seen_tags_lower:
+            tag_counts[legacy_lbl] = tag_counts.get(legacy_lbl, 0) + 1
 
     by_tag = [
         {"tag": t, "count": c}

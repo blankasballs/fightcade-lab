@@ -25,6 +25,20 @@ def build_pwa_manifest_json() -> str:
             "background_color": "#0b0f19",
             "theme_color": "#0b0f19",
             "description": "Review 3rd Strike replays, track Focus Goals, build Study/Train Playlists, and launch instant Takeover drills.",
+            "icons": [
+                {
+                    "src": "/assets/img/icon-192.png",
+                    "sizes": "192x192",
+                    "type": "image/png",
+                    "purpose": "any",
+                },
+                {
+                    "src": "/assets/img/icon-512.png",
+                    "sizes": "512x512",
+                    "type": "image/png",
+                    "purpose": "any",
+                },
+            ],
         },
         indent=2,
     )

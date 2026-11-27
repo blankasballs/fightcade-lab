@@ -15,9 +15,9 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 
-from fightcade_analysis.companion_bridge import get_pairing_state
+from fightcade_analysis.companion_bridge import get_pairing_state, is_allowed_companion_origin
 from fightcade_analysis.env_config import DEFAULT_DATA_DIR
-from fightcade_analysis.takeover import TakeoverManager, validate_takeover_payload
+from fightcade_analysis.takeover import TakeoverManager, sanitize_note, validate_takeover_payload
 
 URI_SCHEME = "fightcadelab"
 _QUARK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
@@ -36,6 +36,7 @@ def build_takeover_uri(
     speed: float = 1.0,
     game_id: str = "sfiii3nr1",
     label: str = "",
+    note: str = "",
 ) -> str:
     """Build a canonical `fightcadelab://takeover?...` deep link."""
     params: dict[str, Any] = {
@@ -55,12 +56,26 @@ def build_takeover_uri(
         params["speed"] = f"{float(speed):.2f}"
     if label:
         params["label"] = " ".join(str(label).split())[:100]
-    return f"{URI_SCHEME}://takeover?{urlencode(params)}"
+    clean_note = sanitize_note(note)
+    if clean_note:
+        params["note"] = clean_note
+    uri = f"{URI_SCHEME}://takeover?{urlencode(params)}"
+    if len(uri) > 2048 and "note" in params:
+        # Trim note smoothly if URL-encoding pushed total URI over 2048 bytes
+        trimmed = clean_note
+        while len(uri) > 2048 and len(trimmed) > 20:
+            trimmed = trimmed[: max(0, len(trimmed) - 40)].rstrip()
+            params["note"] = trimmed
+            uri = f"{URI_SCHEME}://takeover?{urlencode(params)}"
+    return uri
 
 
 def parse_companion_uri(raw_uri: str) -> dict[str, Any]:
     """Strictly parse and sanitize a `fightcadelab://` URI. Raises ValueError on bad input."""
-    text = str(raw_uri or "").strip()
+    raw_str = str(raw_uri or "")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw_str) or '"' in raw_str or "`" in raw_str:
+        raise ValueError("URI contains forbidden control characters, quotes, or backticks")
+    text = raw_str.strip()
     if len(text) > 2048:
         raise ValueError("URI exceeds maximum length")
     parsed = urlsplit(text)
@@ -87,6 +102,8 @@ def parse_companion_uri(raw_uri: str) -> dict[str, Any]:
             "label": _first("label"),
             "bake_if_missing": True,
         }
+        if "note" in qs:
+            raw_payload["note"] = _first("note")
         validated = validate_takeover_payload(raw_payload)
         round_raw = _first("round_id") or _first("r")
         if round_raw:
@@ -104,6 +121,8 @@ def parse_companion_uri(raw_uri: str) -> dict[str, Any]:
         if not _CODE_RE.match(code):
             raise ValueError("Invalid pairing code in URI")
         origin = _first("origin")
+        if origin and not is_allowed_companion_origin(origin):
+            raise ValueError(f"Untrusted pairing origin in URI: '{origin}'")
         return {"action": "pair", "code": code, "origin": origin or None}
 
     if action == "open":

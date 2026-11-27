@@ -255,12 +255,14 @@ def test_http_share_prepare_and_unified_frontend_hosting_markers(tmp_path: Path)
         state_js = requests.get(f"{base}/assets/js/state.js", timeout=5).text
         assert "API_BASE" in state_js
         assert "COMPANION_BASE" in state_js
+        assert "shareMomentBundle(" in state_js
 
         shared_js = requests.get(f"{base}/assets/js/shared.js", timeout=5).text
         assert "openSharedMoment(" in shared_js
         assert "openSharedPlaylist(" in shared_js
         assert "seekSharedToGf(" in shared_js
-        assert "Practice in Takeover" in shared_js
+        assert ">▶ Practice</button>" in shared_js
+        assert "signInRequired: true" in shared_js
     finally:
         srv.shutdown()
         srv.server_close()

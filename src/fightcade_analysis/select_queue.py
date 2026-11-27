@@ -258,6 +258,29 @@ def update_queue_item(
                 it["status"] = st
             if "owner" in patch:
                 it["owner"] = str(patch["owner"] or "").strip()
+            has_start = "start_gf" in patch and patch["start_gf"] not in (None, "")
+            has_end = "end_gf" in patch and patch["end_gf"] not in (None, "")
+            if has_start or has_end:
+                if isinstance(patch.get("start_gf"), bool) or isinstance(patch.get("end_gf"), bool):
+                    raise ValueError("start_gf and end_gf must be integers")
+                try:
+                    new_start = int(patch["start_gf"]) if has_start else int(it.get("start_gf", 0))
+                    new_end = int(patch["end_gf"]) if has_end else int(it.get("end_gf", 0))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("start_gf and end_gf must be integers") from exc
+                if new_start < 1 or new_end < 1:
+                    raise ValueError("start_gf and end_gf must be positive integers")
+                if new_end <= new_start:
+                    raise ValueError("end_gf must be greater than start_gf")
+                it["start_gf"] = new_start
+                it["end_gf"] = new_end
+            if "takeover_gf" in patch and patch["takeover_gf"] not in (None, ""):
+                if isinstance(patch["takeover_gf"], bool):
+                    raise ValueError("takeover_gf must be an integer")
+                try:
+                    it["takeover_gf"] = max(1, int(patch["takeover_gf"]))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("takeover_gf must be an integer") from exc
             for list_field in ("goal_ids", "playlist_ids"):
                 if list_field in patch:
                     raw_ids = patch[list_field]
@@ -274,6 +297,27 @@ def update_queue_item(
                             if len(clean_ids) >= 24:
                                 break
                     it[list_field] = clean_ids
+            if "cloud_moment_id" in patch:
+                val = str(patch["cloud_moment_id"] or "").strip()[:128]
+                it["cloud_moment_id"] = val or None
+            if "cloud_share_token" in patch:
+                val = str(patch["cloud_share_token"] or "").strip()[:128]
+                it["cloud_share_token"] = val or None
+            if "cloud_share_url" in patch:
+                val = str(patch["cloud_share_url"] or "").strip()[:512]
+                it["cloud_share_url"] = val or None
+            if "cloud_visibility" in patch:
+                raw_vis = str(patch["cloud_visibility"] or "").strip().lower()
+                if raw_vis and raw_vis not in ("private", "unlisted"):
+                    raise ValueError("cloud_visibility must be 'private' or 'unlisted'")
+                it["cloud_visibility"] = raw_vis or None
+            if "shared_caption" in patch:
+                cap = str(patch["shared_caption"] or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+                it["shared_caption"] = cap[:1000]
+            if "include_note_on_share" in patch:
+                it["include_note_on_share"] = bool(patch["include_note_on_share"])
+            if "hide_player_names" in patch:
+                it["hide_player_names"] = bool(patch["hide_player_names"])
             it["updated_at"] = datetime.now().isoformat(timespec="seconds")
             updated_item = enrich_queue_item(it, data_dir=data_dir)
             break
@@ -442,15 +486,21 @@ def scan_replay_for_select_marks(
 
     mobile_out_dir = data_root / "replays" / str(quark_id)
     single_pass_enabled = bool(render_mobile_video and use_maxspeed)
+    eff_encoder = ""
     if single_pass_enabled:
         import imageio_ffmpeg
+        from fightcade_analysis.round_renderer import resolve_video_encoder
 
+        eff_encoder = resolve_video_encoder()
         mobile_out_dir.mkdir(parents=True, exist_ok=True)
         env["FC_MOBILE_OUT_DIR"] = str(mobile_out_dir)
         env["FC_FFMPEG_EXE"] = imageio_ffmpeg.get_ffmpeg_exe()
         env["FC_VIDEO_SCALE"] = str(max(1, int(scale)))
         env["FC_VIDEO_CRF"] = str(int(crf))
         env["FC_VIDEO_GOP"] = str(int(gop_size) if gop_size else 0)
+        env["FC_VIDEO_ENCODER"] = eff_encoder
+        env["FC_CAPTURE_AUDIO"] = "1"
+        env["FC_PIPE_TAG"] = f"sp_{os.getpid()}_{int(time.time())}"
         g_dir = resolve_grouflon_dir(eff_exe)
         if g_dir is not None:
             env["FC_GROUFLON_DIR"] = str(g_dir)
@@ -474,6 +524,9 @@ def scan_replay_for_select_marks(
     saw_hb = False
     saw_rounds = False
     last_reported_round = 0
+    published_rounds: dict[int, dict[str, Any]] = {}
+    last_pub_cnt = 0
+    last_pub_check = 0.0
     try:
         while proc.poll() is None:
             now = time.monotonic()
@@ -495,9 +548,39 @@ def scan_replay_for_select_marks(
                                 last_reported_round = cur_rid
                                 if progress_cb is not None:
                                     try:
-                                        progress_cb(cur_rid, 0, f"Processing R{cur_rid}...")
+                                        msg = (
+                                            f"{last_pub_cnt}R ready · streaming R{cur_rid}..."
+                                            if last_pub_cnt > 0
+                                            else f"Processing R{cur_rid}..."
+                                        )
+                                        progress_cb(max(cur_rid, last_pub_cnt), 0, msg)
                                     except Exception:  # noqa: BLE001
                                         pass
+            # Progressive per-round publishing: make completed rounds playable while stream continues
+            if single_pass_enabled and saw_rounds and (now - last_pub_check) >= 1.0:
+                last_pub_check = now
+                try:
+                    from fightcade_analysis.round_renderer import publish_progressive_rounds
+
+                    pub_cnt = publish_progressive_rounds(
+                        quark_id,
+                        csv_tmp,
+                        published_rounds=published_rounds,
+                        data_dir=data_root,
+                        perspective=int(perspective),
+                        scale=max(1, int(scale)),
+                        video_encoder=eff_encoder,
+                    )
+                    if pub_cnt > last_pub_cnt:
+                        last_pub_cnt = pub_cnt
+                        if progress_cb is not None:
+                            try:
+                                next_r = max(last_reported_round, pub_cnt + 1)
+                                progress_cb(pub_cnt, 0, f"{pub_cnt}R ready · streaming R{next_r}...")
+                            except Exception:  # noqa: BLE001
+                                pass
+                except Exception:  # noqa: BLE001
+                    pass
             # Stream EOF quiescence: once match ran and heartbeat stops advancing for idle_finish_seconds
             idle_limit = idle_finish_seconds if saw_rounds else max(25.0, idle_finish_seconds * 4.0)
             if saw_hb and (now - last_hb_change) >= idle_limit:
@@ -520,7 +603,10 @@ def scan_replay_for_select_marks(
         marks_tmp.unlink(missing_ok=True)
         hb_path.unlink(missing_ok=True)
 
+    stream_s = round(time.perf_counter() - t0, 2)
+
     # Convert unified single-pass telemetry CSV into personal Parquet so analyze_match.ps1 skips ingestion!
+    t_pq0 = time.perf_counter()
     parquet_saved = False
     personal_pq = data_root / "personal" / f"{quark_id}.parquet"
     if csv_tmp.exists() and csv_tmp.stat().st_size > 1024 and not personal_pq.exists():
@@ -531,11 +617,35 @@ def scan_replay_for_select_marks(
             print(f"[select_queue] WARNING: Parquet conversion failed for {quark_id}: {exc}")
     if csv_tmp.exists():
         csv_tmp.unlink(missing_ok=True)
+    parquet_s = round(time.perf_counter() - t_pq0, 2)
+
+    # Bake exact .fs + .inputs offline ONLY for actual Select marks pressed (avoids ~700 wasted disk savestates during stream!)
+    t_bake0 = time.perf_counter()
+    if raw_marks and (parquet_saved or personal_pq.exists()):
+        from fightcade_analysis.round_renderer import bake_drill_savestate
+
+        for mk in raw_marks:
+            if mk.get("needs_bake") or not mk.get("savestate"):
+                try:
+                    baked = bake_drill_savestate(
+                        quark_id,
+                        int(mk.get("start_gf") or 0),
+                        int(mk.get("end_gf") or mk.get("press_gf") or 0),
+                        selection_id=str(mk["id"]),
+                        data_dir=data_root,
+                        fbneo_exe=fbneo_exe,
+                    )
+                    mk["savestate"] = baked["savestate"]
+                    mk["inputs"] = baked["inputs"]
+                    mk.pop("needs_bake", None)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[select_queue] WARNING: Could not bake Select mark {mk.get('id')}: {exc}")
+    bake_marks_s = round(time.perf_counter() - t_bake0, 2)
 
     round_cache_count = len(list(round_cache_dir.glob("r*_gf*.fs")))
     added = upsert_queue_items(raw_marks, data_dir=data_root)
-    elapsed = round(time.perf_counter() - t0, 2)
 
+    t_fin0 = time.perf_counter()
     mobile_manifest: dict[str, Any] | None = None
     if single_pass_enabled and (parquet_saved or personal_pq.exists()):
         try:
@@ -546,10 +656,52 @@ def scan_replay_for_select_marks(
                 data_dir=data_root,
                 perspective=int(perspective),
                 scale=max(1, int(scale)),
-                elapsed_s=elapsed,
+                elapsed_s=round(time.perf_counter() - t0, 2),
+                video_encoder=eff_encoder,
+                perf={
+                    "mode": "single_pass_stream",
+                    "stream_s": stream_s,
+                    "parquet_s": parquet_s,
+                    "bake_marks_s": bake_marks_s,
+                    "video_encoder": eff_encoder,
+                },
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[select_queue] WARNING: Single-pass mobile video finalize failed for {quark_id}: {exc}")
+    finalize_s = round(time.perf_counter() - t_fin0, 2)
+    elapsed = round(time.perf_counter() - t0, 2)
+
+    # Append live performance telemetry to data/benchmarks/history.jsonl
+    try:
+        from fightcade_analysis.benchmark import append_benchmark_record
+
+        dur_s = float(mobile_manifest.get("total_duration_s") or 0.0) if mobile_manifest else 0.0
+        rnds = int(mobile_manifest.get("round_count") or round_cache_count) if mobile_manifest else round_cache_count
+        append_benchmark_record(
+            {
+                "label": "live_single_pass" if single_pass_enabled else "live_scan_only",
+                "mode": "live_stream_ingest",
+                "quark_id": quark_id,
+                "round_count": rnds,
+                "gameplay_s": round(dur_s, 2),
+                "elapsed_s": elapsed,
+                "speedup_x": round(dur_s / elapsed, 2) if (elapsed > 0 and dur_s > 0) else 0.0,
+                "total_size_bytes": int(mobile_manifest.get("total_size_bytes") or 0) if mobile_manifest else 0,
+                "has_audio": bool(mobile_manifest.get("has_audio")) if mobile_manifest else False,
+                "encoder": eff_encoder,
+                "workers": 1,
+                "batched": False,
+                "stages": {
+                    "stream_s": stream_s,
+                    "parquet_s": parquet_s,
+                    "bake_marks_s": bake_marks_s,
+                    "finalize_s": finalize_s,
+                },
+            },
+            data_dir=data_root,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     return {
         "ok": True,
@@ -563,6 +715,12 @@ def scan_replay_for_select_marks(
         "mobile_round_count": int(mobile_manifest.get("round_count") or 0) if mobile_manifest else 0,
         "items": added,
         "elapsed_s": elapsed,
+        "stages": {
+            "stream_s": stream_s,
+            "parquet_s": parquet_s,
+            "bake_marks_s": bake_marks_s,
+            "finalize_s": finalize_s,
+        },
     }
 
 

@@ -245,14 +245,14 @@ def build_report_html(
                     precomputed=pc,
                 )
                 p_meta = (
-                    f"<strong>VERIFIED PRO SOLUTION:</strong> "
+                    f"<strong>VERIFIED TOP-RANK SOLUTION:</strong> "
                     f"{pro_who} "
                     f"(EV <strong>{float(pc.get('outcome_value', 0.0)):+.2f}</strong>, "
                     f"<span class='sim-tag'>{sim_str}</span>)"
                 )
                 cap_parts = []
                 if ver.get("pro_solution"):
-                    cap_parts.append(f"Pro solution: {ver['pro_solution']}")
+                    cap_parts.append(f"Top-Rank solution: {ver['pro_solution']}")
                 if ver.get("relevance_reason"):
                     cap_parts.append(f"Relevance: {ver['relevance_reason']}")
                 pro_blocks.append(
@@ -260,7 +260,7 @@ def build_report_html(
                         str(pc["quark_id"]),
                         int(pc["game_frame"]),
                         int(pc["perspective"]),
-                        f"Pro Solution: {m.get('category_label', '')}",
+                        f"Top-Rank Solution: {m.get('category_label', '')}",
                         p_meta,
                         is_user=False,
                         caption=" ".join(cap_parts),
@@ -269,7 +269,7 @@ def build_report_html(
 
             rej = int(m.get("rejected_pro_count", 0))
             pro_note = (
-                f'<div class="sub" style="margin-bottom:10px;font-style:italic;">Pass-2 visual relevance gate filtered out {rej} non-matching RAM pro candidate(s).</div>'
+                f'<div class="sub" style="margin-bottom:10px;font-style:italic;">Pass-2 visual relevance gate filtered out {rej} non-matching RAM top-rank candidate(s).</div>'
                 if rej > 0
                 else ""
             )
@@ -283,7 +283,7 @@ def build_report_html(
                       <h2>{html.escape(m['label'])}</h2>
                       <div class="sub">
                         Round {m['round_id']} &middot; Pre-Hit GameFrame {gframe}{sf_tag} &middot;
-                        pro search tier=<code>{html.escape(str(m.get('retrieval_tier', 'none')))}</code> &middot;
+                        top-rank search tier=<code>{html.escape(str(m.get('retrieval_tier', 'none')))}</code> &middot;
                         <span class="badge badge-ok">Visually Verified</span>
                       </div>
                     </div>
@@ -325,7 +325,7 @@ def build_report_html(
             <div class="ai-box">
               <div class="ai-title">AI Interaction Breakdown <span class="badge badge-ai">{model_tag}</span></div>
               {f'<p><strong>What happened:</strong> {sit}</p>' if sit else ''}
-              {f'<p><strong>Pro adjustment:</strong> {take}</p>' if take else ''}
+              {f'<p><strong>Top-Rank adjustment:</strong> {take}</p>' if take else ''}
             </div>
             """
 
@@ -510,7 +510,7 @@ def build_report_html(
       <h1>{html.escape(title)}</h1>
       <div class="summary-meta">
         QuarkId <code>{html.escape(str(report.get('target_quark_id', '')))}</code> (P{report.get('perspective')}) &middot;
-        {(f"Hybrid VLM + RAM Verified Analysis ({report.get('total_damage_episodes', 0)} Hit-#1 episodes) against {report.get('corpus_size', 0):,} pro states" if is_hybrid_report else f"Analyzed {report.get('total_decision_points', 0)} decision points against {report.get('corpus_size', 0):,} indexed corpus states")} &middot;
+        {(f"Hybrid VLM + RAM Verified Analysis ({report.get('total_damage_episodes', 0)} Hit-#1 episodes) against {report.get('corpus_size', 0):,} top-rank states" if is_hybrid_report else f"Analyzed {report.get('total_decision_points', 0)} decision points against {report.get('corpus_size', 0):,} indexed corpus states")} &middot;
         Showing top {len(report.get('moments', []))} moments (videos paused by default)
       </div>
     </div>

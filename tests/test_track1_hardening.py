@@ -603,17 +603,37 @@ def test_http_settings_endpoint_and_ui_hardening_markers(tmp_path: Path) -> None
         assert r_patch.status_code == 200
         assert r_patch.json()["disk_cache_cap_gb"] == 8.5
 
-        # Verify web UI assets expose Grouflon banner, P1 Coin tip, and On the roadmap pro gate
+        # Verify web UI assets expose Grouflon banner, lazy-bake loop summary, and Top-Rank roadmap gate
         html_txt = requests.get(f"{base}/", timeout=5).text
         assert "grouflonBanner" in html_txt
-        assert "P1 Coin" in html_txt
-        assert "Alt+1" in html_txt
+        assert "composerAutoLoopHint" not in html_txt
+        assert "Create Takeover" not in html_txt
+        assert "drillToggle" not in html_txt
+        assert "studioMatchupHeader" in html_txt
+        assert "btnPracticeTakeover" not in html_txt
+        assert "studioTakeoverTip" not in html_txt
+        assert "btnFindProAnswers" not in html_txt
+        assert "Top-Rank Search" in html_txt
+        assert "Find Pro Answers" not in html_txt
+        assert "Pro Study Reel" not in html_txt
 
         state_js = requests.get(f"{base}/assets/js/state.js", timeout=5).text
         assert "On the roadmap" in state_js
+        assert "isMobileMode" in state_js
+        assert 'pro_clip: "Top-Rank Clip"' in state_js
+        assert "studioEditId" in state_js
+        studio_js = requests.get(f"{base}/assets/js/studio.js", timeout=5).text
+        assert "startStudioInlineEdit" in studio_js
+        assert "saveStudioInlineEdit" in studio_js
+        assert "inline-note-textarea" in studio_js
+        assert "Top-Rank Clips" not in studio_js
+        assert "Pro Search is on the roadmap." not in studio_js
         pop_js = requests.get(f"{base}/assets/js/status_popover.js", timeout=5).text
-        assert "Local Replay Cache Cap" in pop_js
-        assert "P1 Coin" in pop_js
+        assert "Replay Storage" in pop_js
+        assert "Cloud Sharing" in pop_js
+        assert "Setup &amp; Diagnostics" in pop_js
+        assert "P1 Coin" not in pop_js
+        assert "positionStatusPopover" in pop_js
     finally:
         srv.shutdown()
         srv.server_close()

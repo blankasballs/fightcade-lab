@@ -179,7 +179,7 @@ def test_aggregate_verified_habits_html_and_hub_badge(tmp_path: Path):
 
     html_doc = render_verified_habits_html(rollup)
     assert "Hit by Wakeup Reversal / Super" in html_doc
-    assert "VISUALLY VERIFIED PRO SOLUTION" in html_doc
+    assert "VISUALLY VERIFIED TOP-RANK SOLUTION" in html_doc
     assert "1 false match(es) filtered out" in html_doc
     assert 'href="#habit-1"' in html_doc
 
@@ -249,5 +249,5 @@ def test_single_match_hybrid_html_rendering(tmp_path: Path):
     text = out_html.read_text(encoding="utf-8")
     assert "Pass-1 Visual Breakdown" in text
     assert "Missed Anti-Air" in text
-    assert "filtered out 2 non-matching RAM pro candidate(s)" in text
+    assert "filtered out 2 non-matching RAM top-rank candidate(s)" in text
     assert "Instant &lt;1s .fs Ready" in text

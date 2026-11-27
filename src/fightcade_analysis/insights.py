@@ -128,7 +128,7 @@ def _habit_preview_from_doc(doc: dict[str, Any], report_href: str, report_id: st
                     "start_gf": max(1, gf - 120),
                     "end_gf": gf + 150,
                     "anchor_gf": gf,
-                    "label": f"Pro answer: {ps.get('self_char_name', '')} vs {ps.get('opp_char_name', '')}".strip(),
+                    "label": f"Top-Rank Answer: {ps.get('self_char_name', '')} vs {ps.get('opp_char_name', '')}".strip(),
                     "note": str(ver.get("pro_solution") or ver.get("pro_action_summary") or ps.get("action_coarse") or "")[:400],
                     "tags": [str(h.get("label") or "").strip()] if h.get("label") else [],
                 }
@@ -521,7 +521,7 @@ class ProSearchService:
             pq_dir = self.data_dir / "parquet"
             files = sorted(pq_dir.glob("*.parquet")) if pq_dir.is_dir() else []
             if not files:
-                raise FileNotFoundError(f"No pro corpus Parquet files found in {pq_dir}")
+                raise FileNotFoundError(f"No top-rank corpus Parquet files found in {pq_dir}")
             sig = (len(files), max(int(p.stat().st_mtime_ns) for p in files))
             if self._cached_index is not None and self._cached_sig == sig:
                 return self._cached_index
@@ -803,7 +803,7 @@ class InsightJobRunner:
         pq_dir = self.data_dir / "parquet"
         files = sorted(pq_dir.glob("*.parquet")) if pq_dir.is_dir() else []
         if not files:
-            raise FileNotFoundError("No pro corpus Parquets found in data/parquet/")
+            raise FileNotFoundError("No top-rank corpus Parquets found in data/parquet/")
         cfg = SegmentationConfig(penalty=18.0, min_size=45, jump=5, lead_frames=8)
         corpus, _ = load_or_build_corpus(files, config=cfg, both_perspectives=True, cache_dir=self.data_dir / "index")
         index = HierarchicalContextIndex(corpus.meta, corpus.vectors)

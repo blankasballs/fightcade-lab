@@ -246,14 +246,40 @@ def lua_packs_root(data_dir: Path = DEFAULT_DATA_DIR) -> Path:
     return data_dir.resolve() / "lua_packs"
 
 
+def _parse_semver_key(version: str) -> tuple[tuple[int, ...], int, str]:
+    """Parse a numeric semver string into a comparable key `(nums, is_release, prerelease)`."""
+    raw = str(version or "").strip()
+    if raw.startswith(("v", "V")) and len(raw) > 1 and raw[1].isdigit():
+        raw = raw[1:]
+    core, _, prerelease = raw.partition("-")
+    parts = core.split(".")
+    if not parts or not all(p.isdigit() for p in parts):
+        raise ValueError(f"Invalid numeric semver version: '{version}'")
+    return (tuple(int(p) for p in parts), 0 if prerelease else 1, prerelease)
+
+
+def _compare_semver(ver_a: str, ver_b: str) -> int:
+    nums_a, rel_a, pre_a = _parse_semver_key(ver_a)
+    nums_b, rel_b, pre_b = _parse_semver_key(ver_b)
+    width = max(len(nums_a), len(nums_b))
+    key_a = (nums_a + (0,) * (width - len(nums_a)), rel_a, pre_a)
+    key_b = (nums_b + (0,) * (width - len(nums_b)), rel_b, pre_b)
+    if key_a < key_b:
+        return -1
+    if key_a > key_b:
+        return 1
+    return 0
+
+
 def verify_and_install_lua_pack(
     manifest: dict[str, Any],
     *,
     fetch_file_fn: Callable[[str], bytes],
     public_key_b64: str,
     data_dir: Path = DEFAULT_DATA_DIR,
+    allow_downgrade: bool = False,
 ) -> dict[str, Any]:
-    """Verify Ed25519 signature + every file's SHA-256, then atomically activate the Lua pack."""
+    """Verify Ed25519 signature + every file's SHA-256 + anti-rollback version, then atomically activate."""
     if not verify_manifest_signature(manifest, public_key_b64):
         raise ValueError("OTA Lua pack Ed25519 signature verification failed")
 
@@ -267,6 +293,18 @@ def verify_and_install_lua_pack(
         raise ValueError("OTA manifest has no files")
 
     game_root = lua_packs_root(data_dir) / game_id
+    active_ptr = game_root / "active.json"
+    if not allow_downgrade and active_ptr.is_file():
+        try:
+            active_doc = json.loads(active_ptr.read_text(encoding="utf-8"))
+            active_ver = str(active_doc.get("version") or "").strip()
+        except Exception:  # noqa: BLE001
+            active_ver = ""
+        if active_ver and _compare_semver(version, active_ver) < 0:
+            raise ValueError(
+                f"OTA Lua pack downgrade rejected for {game_id}: {version} < active {active_ver}"
+            )
+
     staging_dir = game_root / f".staging_{version}_{os.getpid()}"
     target_dir = game_root / version
     if staging_dir.exists():

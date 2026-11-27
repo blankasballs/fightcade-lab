@@ -6,10 +6,6 @@ function setFilter(f) {
   loadMatches();
 }
 
-function toggleAddPanel() {
-  document.getElementById("addPanel").classList.toggle("hidden");
-}
-
 function onCharFilterChange() {
   state.selfCharFilter = document.getElementById("selfCharFilter").value || "";
   state.oppCharFilter = document.getElementById("oppCharFilter").value || "";
@@ -151,33 +147,18 @@ async function processMatch(qid, perspective) {
   }
 }
 
-async function processManualQuark() {
-  const raw = document.getElementById("manualQuarkInput").value.trim();
-  const persp = Number(document.getElementById("manualPersp").value || 1);
-  if (!raw) return toast("Paste a Quark ID or Fightcade URL");
-  try {
-    const res = await api("/api/matches/process", {
-      method: "POST",
-      body: JSON.stringify({ quark_id: raw, perspective: persp }),
-    });
-    document.getElementById("manualQuarkInput").value = "";
-    toast(`Queued ${res.job.quark_id}`);
-    await loadMatches();
-    pollJobs();
-  } catch (err) {
-    toast(err.message);
-  }
-}
-
 function statusBadgeHtml(m) {
-  if (m.status === "ready") return `<span class="pill ready">● Ready (${m.mobile_round_count}R)</span>`;
+  if (!m || m.status === "ready") return "";
   if (m.status === "processing" || m.status === "queued") {
     const msg = m.job ? m.job.message : "Queued";
     return `<span class="pill busy">◌ ${esc(msg)}</span>`;
   }
-  if (m.status === "cached_no_video") return `<span class="pill cached">Cached · Fast Render (~15s)</span>`;
+  if (m.status === "cached_no_video") return `<span class="pill cached">Cached (~15s)</span>`;
   if (m.status === "telemetry_only") return `<span class="pill cached">Telemetry Only</span>`;
-  return `<span class="pill unproc">Not Processed</span>`;
+  if (m.status === "error" && !(m.job && m.job.state === "error")) {
+    return `<span class="pill err">Error</span>`;
+  }
+  return "";
 }
 
 function openMatchFromMatches(qid) {
@@ -202,37 +183,28 @@ function renderMatchList() {
   }
 
   host.innerHTML = state.matches.map(m => {
-    const sChars = (m.self_chars && m.self_chars.length) ? m.self_chars : (m.self_char_name ? [m.self_char_name] : []);
-    const oChars = (m.opp_chars && m.opp_chars.length) ? m.opp_chars : (m.opp_char_name ? [m.opp_char_name] : []);
-    let chars = "";
-    if (sChars.length || oChars.length) {
-      const sHtml = sChars.map(ch =>
-        `<span class="pill char-self ${state.selfCharFilter === ch ? "active-f" : ""}" onclick="toggleCharTagFilter('self', '${esc(ch)}')">${esc(ch)}</span>`
-      ).join("");
-      const oHtml = oChars.map(ch =>
-        `<span class="pill char-opp ${state.oppCharFilter === ch ? "active-f" : ""}" onclick="toggleCharTagFilter('opp', '${esc(ch)}')">${esc(ch)}</span>`
-      ).join("");
-      chars = `${sHtml}<span class="char-vs">vs</span>${oHtml}`;
-    }
+    const titleHtml = formatMatchLabelHtml(m, {
+      defaultSelfName: state.username,
+      charFilterFn: "toggleCharTagFilter",
+      activeSelfChar: state.selfCharFilter,
+      activeOppChar: state.oppCharFilter,
+      stackedMobile: true,
+    });
     const score = (m.self_score != null && m.opp_score != null && (m.self_score || m.opp_score))
-      ? `<span class="pill">${m.self_score}–${m.opp_score}</span>` : "";
-    const rk = m.opp_rank_letter ? `<span class="rank">${esc(m.opp_rank_letter)}</span>` : "";
+      ? `<span class="pill match-score-pill">${m.self_score}–${m.opp_score}</span>` : "";
     const dur = m.duration_s > 0 ? `${Math.round(m.duration_s / 60)}m` : "";
+    const statusBadge = statusBadgeHtml(m);
     const notePill = m.notes_count > 0 ? `<span class="pill note">📝 ${m.notes_count}</span>` : "";
-    const selCount = Number(m.select_marks_count || 0);
-    const selPill = selCount > 0
-      ? (m.status === "ready" && m.first_select_mark
-          ? `<button class="pill drill" style="cursor:pointer;" onclick="openMatchAtFirstMark('${esc(m.quark_id)}', ${m.perspective || 1}, ${m.first_select_mark.round_id || 1}, ${m.first_select_mark.anchor_gf || 0})">⚡ ${selCount} mark${selCount === 1 ? "" : "s"}</button>`
-          : `<span class="pill drill">⚡ ${selCount} mark${selCount === 1 ? "" : "s"}</span>`)
-      : "";
 
     let aiPill = "";
     if (m.has_report && m.report_url) {
-      aiPill = `<button class="pill ready" style="cursor:pointer;" onclick="openReport('${esc(m.report_url)}', 'matches')">✨ AI Report</button>`;
+      aiPill = `<button class="pill ready" style="cursor:pointer;" onclick="openReport(${escJsAttr(m.report_url)}, 'matches')">✨ AI Report</button>`;
     } else if (m.has_telemetry && isProCorpusEnabled() && state.capabilities.has_gemini) {
-      aiPill = `<button class="pill cached" style="cursor:pointer;" onclick="triggerMatchBreakdown('${esc(m.quark_id)}', ${m.perspective || 1})">✨ Run Breakdown</button>`;
+      aiPill = `<button class="pill cached" style="cursor:pointer;" onclick="triggerMatchBreakdown(${escJsAttr(m.quark_id)}, ${Number(m.perspective || 1)})">✨ Run Breakdown</button>`;
     }
     const errPill = (m.job && m.job.state === "error") ? `<span class="pill err">Error: ${esc(m.job.error)}</span>` : "";
+    const badges = [statusBadge, notePill, aiPill, errPill].filter(Boolean);
+    const badgesHtml = badges.length ? `<div class="row match-badges">${badges.join("")}</div>` : "";
 
     let progHtml = "";
     if (m.job && (m.job.state === "running" || m.job.state === "queued" || m.job.state === "paused")) {
@@ -242,41 +214,34 @@ function renderMatchList() {
       progHtml = `<div class="prog-bar"><div class="prog-fill" style="width:${pct}%"></div></div>`;
     }
 
+    const playableDuringStream = (m.status === "processing" || m.status === "queued") && Number(m.mobile_round_count || 0) > 0;
     const primaryBtn = m.status === "ready"
-      ? `<button class="emerald sm" onclick="openMatchFromMatches('${esc(m.quark_id)}')">Review →</button>`
-      : (m.status === "processing" || m.status === "queued")
-        ? `<button class="sm" disabled>Working...</button>`
-        : `<button class="primary sm" onclick="processMatch('${esc(m.quark_id)}', ${m.perspective})" ${!state.capabilities.can_render ? "disabled title='Requires local companion'" : ""}>Process</button>`;
+      ? `<button class="emerald sm" data-tip="Open this set in Replay Studio" onclick="openMatchFromMatches(${escJsAttr(m.quark_id)})">Open in Studio →</button>`
+      : playableDuringStream
+        ? `<button class="emerald sm" data-tip="Open completed rounds in Replay Studio while the rest stream in background" onclick="openMatchFromMatches(${escJsAttr(m.quark_id)})">Open in Studio (1–${Number(m.mobile_round_count || 0)}R)</button>`
+        : (m.status === "processing" || m.status === "queued")
+          ? `<button class="sm" disabled>Working...</button>`
+          : `<button class="primary sm" data-tip="${state.capabilities.can_render ? "Ingest telemetry and render 60fps review video locally" : "Requires local companion"}" onclick="processMatch(${escJsAttr(m.quark_id)}, ${Number(m.perspective || 1)})" ${!state.capabilities.can_render ? "disabled" : ""}>Process</button>`;
 
-    const rawOpp = String(m.opp_player_name || "").trim();
-    const isPlaceholderOpp = !rawOpp || rawOpp === "P1" || rawOpp === "P2";
-    const oppDisplay = isPlaceholderOpp
-      ? (m.opp_char_name ? `${m.opp_char_name} (${rawOpp || "Opp"})` : (rawOpp || "Opponent"))
-      : rawOpp;
+    const metaParts = [
+      esc(formatTimestampWithTz(m.date, m.date_str || m.quark_id)),
+      Number(m.mobile_round_count || 0) > 0 ? `${Number(m.mobile_round_count)}R` : "",
+      dur,
+      m.ranked ? "Ranked" : "",
+    ].filter(Boolean);
 
     return `
       <div class="card match-card">
-        <div class="row-between">
+        <div class="match-card-grid">
           <div class="match-title">
-            <span>vs ${esc(oppDisplay)}</span>
-            ${rk}
+            ${titleHtml}
             ${score}
           </div>
-          ${primaryBtn}
-        </div>
-        <div class="row">
-          ${statusBadgeHtml(m)}
-          ${chars}
-          ${selPill}
-          ${notePill}
-          ${aiPill}
-          ${errPill}
-        </div>
-        <div class="match-meta">
-          <span>${esc(m.date_str || m.quark_id)}</span>
-          ${dur ? `<span>· ${dur}</span>` : ""}
-          ${m.ranked ? `<span>· Ranked</span>` : ""}
-          <span>· P${m.perspective}</span>
+          ${badgesHtml}
+          <div class="match-meta">
+            ${metaParts.map((part, i) => `<span>${i > 0 ? "· " : ""}${part}</span>`).join("")}
+          </div>
+          <div class="match-card-cta">${primaryBtn}</div>
         </div>
         ${m.set_note_preview ? `<div style="font-size:12.5px; color:var(--text-soft); border-left:2px solid var(--violet); padding-left:8px;">${esc(m.set_note_preview)}</div>` : ""}
         ${progHtml}

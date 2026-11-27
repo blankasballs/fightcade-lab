@@ -27,6 +27,7 @@ local P1_VALID_PTR    = 0x02068C6C + 0x2A0
 local P2_VALID_PTR    = 0x02069104 + 0x2A0
 
 local JOBS_FILE        = os.getenv("FC_JOBS_FILE") or ""
+local BATCH_ROUNDS_FILE= os.getenv("FC_BATCH_ROUNDS_FILE") or ""
 local OFFLINE_INPUTS   = os.getenv("FC_OFFLINE_INPUTS") or ""
 local HIDE_T0_BANNER   = (os.getenv("FC_HIDE_T0_BANNER") == "1")
 local WRITE_GF_RANGE   = (os.getenv("FC_WRITE_GF_RANGE") == "1")
@@ -37,10 +38,17 @@ local FFMPEG_EXE       = os.getenv("FC_FFMPEG_EXE") or ""
 local VIDEO_SCALE      = tonumber(os.getenv("FC_VIDEO_SCALE")) or 2
 local VIDEO_CRF        = tonumber(os.getenv("FC_VIDEO_CRF")) or 26
 local VIDEO_GOP        = tonumber(os.getenv("FC_VIDEO_GOP")) or 30
-local ERR_PATH         = (JOBS_FILE ~= "" and JOBS_FILE or (os.getenv("FC_RAW_FRAMES_OUT") or "capture_clip")) .. ".err"
+local VIDEO_ENCODER    = os.getenv("FC_VIDEO_ENCODER") or "libx264:fast"
+local FFMPEG_THREADS   = tonumber(os.getenv("FC_FFMPEG_THREADS")) or 0
+local CAPTURE_AUDIO    = (os.getenv("FC_CAPTURE_AUDIO") or "1") ~= "0"
+local PIPE_TAG         = os.getenv("FC_PIPE_TAG") or tostring(os.time())
+local ERR_PATH         = (BATCH_ROUNDS_FILE ~= "" and BATCH_ROUNDS_FILE or (JOBS_FILE ~= "" and JOBS_FILE or (os.getenv("FC_RAW_FRAMES_OUT") or "capture_clip"))) .. ".err"
 local HAS_DIRECT_PIPE  = (type(emu.capture_pipe) == "function") and (FFMPEG_EXE ~= "")
+local HAS_DUAL_PIPE_AV = CAPTURE_AUDIO and (type(emu.capture_pipe_av) == "function")
+local HAS_AUDIO_CAPTURE = CAPTURE_AUDIO and (HAS_DUAL_PIPE_AV or type(emu.capture_audio_open) == "function")
+local _pipe_seq = 0
 
-local function build_ffmpeg_pipe_cmd(mp4_path, w, h)
+local function build_ffmpeg_pipe_cmd(mp4_path, w, h, with_faststart, aud_pipe_name, aud_in_rate)
   local s = (VIDEO_SCALE and VIDEO_SCALE >= 1) and math.floor(VIDEO_SCALE) or 1
   local out_w = w * s
   local out_h = h * s
@@ -52,11 +60,31 @@ local function build_ffmpeg_pipe_cmd(mp4_path, w, h)
   end
   local gop = ""
   if VIDEO_GOP and VIDEO_GOP > 0 then
-    gop = string.format(" -g %d -keyint_min %d -sc_threshold 0", VIDEO_GOP, VIDEO_GOP)
+    if VIDEO_ENCODER == "h264_nvenc" then
+      gop = string.format(" -g %d", VIDEO_GOP)
+    else
+      gop = string.format(" -g %d -keyint_min %d -sc_threshold 0", VIDEO_GOP, VIDEO_GOP)
+    end
+  end
+  local enc_args = ""
+  if VIDEO_ENCODER == "h264_nvenc" then
+    enc_args = string.format("-c:v h264_nvenc -preset p4 -rc vbr -cq %d -b:v 0", VIDEO_CRF)
+  else
+    local preset = string.match(VIDEO_ENCODER, "^libx264:(.+)$") or "fast"
+    local thr = (FFMPEG_THREADS and FFMPEG_THREADS > 0) and string.format(" -threads %d", math.floor(FFMPEG_THREADS)) or ""
+    enc_args = string.format("-c:v libx264 -preset %s -crf %d%s", preset, VIDEO_CRF, thr)
+  end
+  local faststart = (with_faststart ~= false) and " -movflags +faststart" or ""
+  if aud_pipe_name and aud_pipe_name ~= "" then
+    local ar = math.max(8000, tonumber(aud_in_rate) or 44400)
+    return string.format(
+      '"%s" -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s %dx%d -r 60 -i - -f s16le -ar %d -ac 2 -i "%s" -map 0:v:0 -map 1:a:0%s %s -pix_fmt yuv420p -aspect 4:3%s -c:a aac -b:a 96k -ar 48000 -shortest%s "%s"',
+      FFMPEG_EXE, w, h, ar, aud_pipe_name, vf, enc_args, gop, faststart, mp4_path
+    )
   end
   return string.format(
-    '"%s" -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s %dx%d -r 60 -i -%s -c:v libx264 -preset fast -crf %d -pix_fmt yuv420p -aspect 4:3%s -movflags +faststart "%s"',
-    FFMPEG_EXE, w, h, vf, VIDEO_CRF, gop, mp4_path
+    '"%s" -y -f rawvideo -vcodec rawvideo -pix_fmt rgb24 -s %dx%d -r 60 -i -%s %s -pix_fmt yuv420p -aspect 4:3%s%s "%s"',
+    FFMPEG_EXE, w, h, vf, enc_args, gop, faststart, mp4_path
   )
 end
 
@@ -74,18 +102,28 @@ end
 
 local overlay = nil
 local overlay_dump_file = nil
-if GROUFLON_OVERLAY or OVERLAY_DUMP_OUT ~= "" then
-  local ok_req, mod = pcall(require, "grouflon_overlay")
-  if ok_req and mod then
-    if mod.init(GROUFLON_DIR) then
-      overlay = mod
+local want_overlay_init = GROUFLON_OVERLAY or OVERLAY_DUMP_OUT ~= "" or (BATCH_ROUNDS_FILE ~= "" and (os.getenv("FC_EXPORT_OVERLAY") ~= "0"))
+if want_overlay_init then
+  if not GROUFLON_OVERLAY then
+    -- Fast native sfiii3nr1 RAM hitbox/gauge TSV extractor (~10x faster, zero PNG/GD boot overhead!)
+    local ok_fast, fast_mod = pcall(require, "sfiii3nr1_overlay")
+    if ok_fast and fast_mod and fast_mod.init() then
+      overlay = fast_mod
+    end
+  end
+  if not overlay and GROUFLON_DIR ~= "" then
+    local ok_req, mod = pcall(require, "grouflon_overlay")
+    if ok_req and mod then
+      if mod.init(GROUFLON_DIR) then
+        overlay = mod
+      else
+        local ef = io.open(ERR_PATH, "a")
+        if ef then ef:write("grouflon_overlay init failed: " .. tostring(mod.error) .. "\n"); ef:close() end
+      end
     else
       local ef = io.open(ERR_PATH, "a")
-      if ef then ef:write("grouflon_overlay init failed: " .. tostring(mod.error) .. "\n"); ef:close() end
+      if ef then ef:write("grouflon_overlay require failed: " .. tostring(mod) .. "\n"); ef:close() end
     end
-  else
-    local ef = io.open(ERR_PATH, "a")
-    if ef then ef:write("grouflon_overlay require failed: " .. tostring(mod) .. "\n"); ef:close() end
   end
 end
 if overlay and OVERLAY_DUMP_OUT ~= "" then
@@ -113,8 +151,11 @@ local BUTTON_BITS = {
 
 local offline_by_gf = nil
 local offline_max_gf = 0
-if OFFLINE_INPUTS ~= "" then
-  local inf = io.open(OFFLINE_INPUTS, "r")
+local function load_offline_inputs_file(path)
+  offline_by_gf = nil
+  offline_max_gf = 0
+  if not path or path == "" then return end
+  local inf = io.open(path, "r")
   if inf then
     offline_by_gf = {}
     for line in inf:lines() do
@@ -128,6 +169,7 @@ if OFFLINE_INPUTS ~= "" then
     inf:close()
   end
 end
+load_offline_inputs_file(OFFLINE_INPUTS)
 
 local function write_mask_to_table(tbl, prefix, mask)
   for i = 1, #BUTTON_BITS do
@@ -179,6 +221,9 @@ local function make_job(target_frame, pre_frames, post_frames, savestate_lead, s
     label            = lbl_s,
     direct_pipe      = use_pipe,
     pipe_open        = false,
+    aud_rate         = 0,
+    aud_spf          = 0,
+    muxed_inline     = false,
     out_file         = nil,
     savestate_done   = (savestate_out == nil or savestate_out == ""),
     first_captured_gf = -1,
@@ -189,8 +234,90 @@ local function make_job(target_frame, pre_frames, post_frames, savestate_lead, s
 end
 
 local jobs = {}
+local batch_rounds = nil
+local batch_idx = 0
 
-if JOBS_FILE ~= "" then
+local function open_overlay_dump_for(path)
+  if overlay_dump_file then
+    overlay_dump_file:flush()
+    overlay_dump_file:close()
+    overlay_dump_file = nil
+  end
+  if overlay and path and path ~= "" then
+    local of, oerr = io.open(path, "w")
+    if of then
+      overlay_dump_file = of
+    else
+      log_error("Failed to open overlay TSV '" .. path .. "': " .. tostring(oerr))
+    end
+  end
+end
+
+local function activate_batch_round(idx, load_fs)
+  local item = batch_rounds[idx]
+  if not item then return false end
+  batch_idx = idx
+  if load_fs then
+    local ok_l, lerr = pcall(savestate.load, item.fs_path)
+    if not ok_l then
+      log_error("savestate.load failed for batch round " .. tostring(item.round_id) .. ": " .. tostring(lerr))
+      return false
+    end
+  end
+  load_offline_inputs_file(item.inputs_path)
+  if overlay then
+    pcall(overlay.reset)
+  end
+  open_overlay_dump_for(item.overlay_tsv_out)
+  jobs = {
+    make_job(
+      item.start_gf,
+      0,
+      math.max(1, item.end_gf - item.start_gf),
+      0,
+      "",
+      item.mp4_out,
+      ""
+    ),
+  }
+  return true
+end
+
+if BATCH_ROUNDS_FILE ~= "" then
+  local bf, err = io.open(BATCH_ROUNDS_FILE, "r")
+  if not bf then
+    log_error("Failed to open FC_BATCH_ROUNDS_FILE '" .. BATCH_ROUNDS_FILE .. "': " .. tostring(err))
+    os.exit(1)
+  end
+  batch_rounds = {}
+  for raw_line in bf:lines() do
+    local line = string.gsub(raw_line, "[\r\n]+$", "")
+    if line ~= "" then
+      local f = split_tabs(line)
+      local rid = tonumber(f[1]) or 0
+      local sgf = tonumber(f[4]) or 0
+      local egf = tonumber(f[5]) or 0
+      if rid > 0 and f[2] and f[2] ~= "" and sgf > 0 and egf >= sgf then
+        batch_rounds[#batch_rounds + 1] = {
+          round_id        = rid,
+          fs_path         = f[2],
+          inputs_path     = f[3] or "",
+          start_gf        = sgf,
+          end_gf          = egf,
+          mp4_out         = f[6] or "",
+          overlay_tsv_out = f[7] or "",
+        }
+      end
+    end
+  end
+  bf:close()
+  if #batch_rounds == 0 then
+    log_error("No valid batch rounds in FC_BATCH_ROUNDS_FILE")
+    os.exit(1)
+  end
+  -- First round's .fs was already loaded via CLI arg
+  activate_batch_round(1, false)
+elseif JOBS_FILE ~= "" then
   local jf, err = io.open(JOBS_FILE, "r")
   if not jf then
     log_error("Failed to open FC_JOBS_FILE '" .. JOBS_FILE .. "': " .. tostring(err))
@@ -251,19 +378,23 @@ local function write_gf_sidecar(job)
   if WRITE_GF_RANGE and job.raw_out ~= "" and job.frames_written > 0 then
     local gff = io.open(job.raw_out .. ".gf", "w")
     if gff then
-      gff:write(
-        tostring(job.first_captured_gf) .. "," ..
-        tostring(job.last_captured_gf) .. "," ..
-        tostring(job.frames_written) .. "\n"
-      )
+      if job.aud_rate and job.aud_rate > 0 and job.aud_spf and job.aud_spf > 0 then
+        gff:write(string.format("%d,%d,%d,%d,%d,%d\n", job.first_captured_gf, job.last_captured_gf, job.frames_written, job.aud_rate, job.aud_spf, job.muxed_inline and 1 or 0))
+      else
+        gff:write(
+          tostring(job.first_captured_gf) .. "," ..
+          tostring(job.last_captured_gf) .. "," ..
+          tostring(job.frames_written) .. "\n"
+        )
+      end
       gff:close()
     end
   end
 end
 
-local function close_job_file(job)
+local function close_job_file(job, wait_proc)
   if job.pipe_open then
-    pcall(emu.capture_close)
+    pcall(emu.capture_close, wait_proc ~= false)
     job.pipe_open = false
     write_gf_sidecar(job)
   end
@@ -277,7 +408,10 @@ end
 
 local function close_all_files()
   for i = 1, #jobs do
-    close_job_file(jobs[i])
+    close_job_file(jobs[i], true)
+  end
+  if type(emu.capture_wait_all) == "function" then
+    pcall(emu.capture_wait_all)
   end
   if overlay_dump_file then
     overlay_dump_file:flush()
@@ -347,9 +481,9 @@ local function on_frame_after()
         job.savestate_done = true
       end
 
-      local savestate_only = (job.raw_out == "" and OVERLAY_DUMP_OUT == "")
+      local savestate_only = (job.raw_out == "" and OVERLAY_DUMP_OUT == "" and overlay_dump_file == nil)
       if (savestate_only and job.savestate_done) or (gf > job.end_frame and job.savestate_done) then
-        close_job_file(job)
+        close_job_file(job, batch_rounds == nil)
         job.finished = true
       else
         any_unfinished = true
@@ -360,12 +494,42 @@ local function on_frame_after()
               local h = (emu.screenheight and emu.screenheight()) or 224
               if w <= 0 then w = 384 end
               if h <= 0 then h = 224 end
-              local cmd = build_ffmpeg_pipe_cmd(job.raw_out, w, h)
-              local ok_p, perr = emu.capture_pipe(cmd)
-              if not ok_p then
-                log_error("emu.capture_pipe failed: " .. tostring(perr))
-                finish(2)
-                return
+              if HAS_DUAL_PIPE_AV then
+                _pipe_seq = _pipe_seq + 1
+                local pipe_name = string.format("\\\\.\\pipe\\fclab_aud_%s_%d", PIPE_TAG, _pipe_seq)
+                local r_info, spf_info = 44100, 740
+                if type(emu.capture_audio_info) == "function" then
+                  r_info, spf_info = emu.capture_audio_info()
+                end
+                local cmd = build_ffmpeg_pipe_cmd(job.raw_out, w, h, true, pipe_name, (tonumber(spf_info) or 740) * 60)
+                local ok_p, perr, _, r_a, spf_a = emu.capture_pipe_av(cmd, pipe_name)
+                if not ok_p then
+                  log_error("emu.capture_pipe_av failed: " .. tostring(perr))
+                  finish(2)
+                  return
+                end
+                job.aud_rate = tonumber(r_a) or tonumber(r_info) or 44100
+                job.aud_spf = tonumber(spf_a) or tonumber(spf_info) or 740
+                job.muxed_inline = true
+              else
+                local vid_target = HAS_AUDIO_CAPTURE and (job.raw_out .. ".vid.mp4") or job.raw_out
+                local cmd = build_ffmpeg_pipe_cmd(vid_target, w, h, not HAS_AUDIO_CAPTURE)
+                local ok_p, perr = emu.capture_pipe(cmd)
+                if not ok_p then
+                  log_error("emu.capture_pipe failed: " .. tostring(perr))
+                  finish(2)
+                  return
+                end
+                if HAS_AUDIO_CAPTURE then
+                  local pcm_path = job.raw_out .. ".pcm"
+                  local ok_a, r_a, spf_a = emu.capture_audio_open(pcm_path)
+                  if ok_a then
+                    job.aud_rate = tonumber(r_a) or 44100
+                    job.aud_spf = tonumber(spf_a) or 740
+                  else
+                    log_error("emu.capture_audio_open failed: " .. tostring(r_a))
+                  end
+                end
               end
               job.pipe_open = true
             end
@@ -380,7 +544,7 @@ local function on_frame_after()
         elseif job.raw_out ~= "" and gf >= job.slowdown_frame then
           need_normal = true
         end
-        if (job.raw_out ~= "" or OVERLAY_DUMP_OUT ~= "") and gf >= (job.start_frame - 60) and gf <= job.end_frame then
+        if (job.raw_out ~= "" or OVERLAY_DUMP_OUT ~= "" or overlay_dump_file ~= nil) and gf >= (job.start_frame - 60) and gf <= job.end_frame then
           need_overlay = true
         end
         if overlay_dump_file and gf >= job.start_frame and gf <= job.end_frame then
@@ -402,6 +566,13 @@ local function on_frame_after()
   end
 
   if not any_unfinished then
+    if batch_rounds and batch_idx < #batch_rounds then
+      state.last_dumped_gf = -1
+      if activate_batch_round(batch_idx + 1, true) then
+        set_speed("turbo")
+        return
+      end
+    end
     finish(0)
     return
   end

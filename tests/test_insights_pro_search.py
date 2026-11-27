@@ -315,3 +315,42 @@ def test_takeover_bake_if_missing_uses_replay_cache_adhoc_bake(tmp_path: Path) -
     assert len(baked_calls) == 1
     assert baked_calls[0][1] == 17620
     assert baked_calls[0][2] == 17740
+
+    # 2nd launch with identical (start_gf, end_gf) reuses cached ad-hoc `.fs` without re-baking
+    res2 = mgr.launch(
+        {
+            "quark_id": qid,
+            "frame": 17660,
+            "start_gf": 17620,
+            "end_gf": 17740,
+            "player": 1,
+            "bake_if_missing": True,
+            "label": "Ad-hoc Studio practice",
+        }
+    )
+    assert res2["ok"] is True
+    assert res2["method"] == "instant_savestate"
+    assert res2["baked_ad_hoc"] is False
+    assert len(baked_calls) == 1
+
+    # Changing end_gf (even with same start_gf & pre-existing savestates/<qid>_gf<frame>.fs) triggers fresh range-keyed bake
+    sav_dir = tmp_path / "savestates"
+    sav_dir.mkdir(parents=True, exist_ok=True)
+    (sav_dir / f"{qid}_gf17660.fs").write_bytes(b"OLD" * 4096)
+
+    res3 = mgr.launch(
+        {
+            "quark_id": qid,
+            "frame": 17660,
+            "start_gf": 17620,
+            "end_gf": 17810,
+            "player": 1,
+            "bake_if_missing": True,
+            "label": "Edited end_gf",
+        }
+    )
+    assert res3["ok"] is True
+    assert res3["method"] == "instant_savestate"
+    assert res3["baked_ad_hoc"] is True
+    assert len(baked_calls) == 2
+    assert baked_calls[1][1:3] == (17620, 17810)

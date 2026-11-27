@@ -25,6 +25,28 @@ DEFAULT_DATA_DIR = REPO_ROOT / "data"
 DEFAULT_DISK_CACHE_CAP_GB: float = 5.0
 
 _ROM_PATH_RE = re.compile(r"^\s*szAppRomPaths\[(\d+)\]\s*(.*)$")
+_STREAM_TARGET_RE = re.compile(r"^quark:stream,[a-z0-9_-]{2,32},[A-Za-z0-9_-]{3,64}\.[0-9]{1,4},[0-9]{2,5}$")
+_ROM_ID_RE = re.compile(r"^[a-z0-9_-]{2,32}$")
+
+
+def validate_stream_target(raw: str) -> str:
+    """Strictly validate a Fightcade `quark:stream,...` CLI target to block Lua/arg injection."""
+    if not isinstance(raw, str):
+        raise ValueError("stream_target must be a string")
+    if (
+        not raw
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+        or '"' in raw
+        or "'" in raw
+        or "\\" in raw
+        or "/" in raw
+        or ".." in raw
+        or ".lua" in raw.lower()
+    ):
+        raise ValueError(f"Unsafe or malformed Fightcade stream_target: {raw!r}")
+    if not _STREAM_TARGET_RE.match(raw):
+        raise ValueError(f"Invalid Fightcade stream_target format: {raw!r}")
+    return raw
 
 
 def _read_dotenv_value(key: str, *, env_path: Path | None = None) -> str | None:
@@ -564,10 +586,29 @@ def build_fbneo_cmdline(
     short_path_fn: Any | None = None,
 ) -> str:
     """Build a space-safe Windows command string for launching FBNeo with `<target>` before `<lua>`."""
+    if not target_is_path:
+        target_s = str(target_arg)
+        if (
+            not target_s
+            or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in target_s)
+            or '"' in target_s
+            or "'" in target_s
+            or "\\" in target_s
+            or "/" in target_s
+            or ".." in target_s
+            or ".lua" in target_s.lower()
+        ):
+            raise ValueError(f"Unsafe non-path FBNeo target argument: {target_s!r}")
+        if not _ROM_ID_RE.match(target_s):
+            validate_stream_target(target_s)
+
     parts = [f'"{exe_path}"']
     for fl in flags:
-        if fl and str(fl).strip():
-            parts.append(str(fl).strip())
+        fl_s = str(fl or "").strip()
+        if fl_s:
+            if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in fl_s) or '"' in fl_s or "'" in fl_s:
+                raise ValueError(f"Unsafe FBNeo CLI flag: {fl!r}")
+            parts.append(fl_s)
     parts.append(
         format_fbneo_cli_arg(
             target_arg,

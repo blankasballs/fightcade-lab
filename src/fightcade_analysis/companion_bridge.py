@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from fightcade_analysis.env_config import DEFAULT_DATA_DIR
+from fightcade_analysis.env_config import DEFAULT_DATA_DIR, validate_stream_target
 from fightcade_analysis.fetch_replays import DEFAULT_UA
 
 DEFAULT_CLOUD_BASE_URL = "https://fightcadelab.com"
@@ -32,7 +32,6 @@ ALLOWED_CROSS_ORIGINS: frozenset[str] = frozenset(
     {
         "https://fightcadelab.com",
         "https://www.fightcadelab.com",
-        "https://staging.fightcadelab.com",
     }
 )
 
@@ -79,17 +78,15 @@ def is_allowed_companion_origin(origin: str | None, host_header: str | None = No
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return False
 
-    # Same-origin local check
-    if host_header and parsed.netloc.lower() == host_header.strip().lower():
+    # Same-origin local check (exact Host match only — no cross-port localhost wildcard)
+    if host_header and parsed.scheme == "http" and parsed.netloc.lower() == host_header.strip().lower():
         return True
 
-    # Localhost / 127.0.0.1 loopback dev origins
-    hostname = (parsed.hostname or "").lower()
-    if parsed.scheme == "http" and hostname in ("127.0.0.1", "localhost"):
-        return True
-
-    # Explicit production/staging hosted origins (plus optional FC_EXTRA_ALLOWED_ORIGINS for dev)
+    # Explicit production hosted origins, configured FC_CLOUD_BASE_URL origin & optional FC_EXTRA_ALLOWED_ORIGINS
     allowed = set(ALLOWED_CROSS_ORIGINS)
+    cloud_parsed = urlsplit(get_cloud_base_url())
+    if cloud_parsed.scheme in ("http", "https") and cloud_parsed.netloc:
+        allowed.add(f"{cloud_parsed.scheme}://{cloud_parsed.netloc.lower()}")
     extra = os.environ.get("FC_EXTRA_ALLOWED_ORIGINS") or ""
     for item in extra.split(","):
         u = item.strip().rstrip("/")
@@ -168,12 +165,23 @@ def _save_pairing_store(doc: dict[str, Any], data_dir: Path = DEFAULT_DATA_DIR) 
     tmp.replace(path)
 
 
+def get_cloud_token(data_dir: Path = DEFAULT_DATA_DIR) -> str | None:
+    """Return the stored cloud Companion Bearer token (server-side only — never expose in HTTP JSON)."""
+    with _PAIRING_LOCK:
+        doc = _load_pairing_store(data_dir)
+    raw = str(doc.get("cloud_token") or "").strip()
+    return raw or None
+
+
 def get_pairing_state(data_dir: Path = DEFAULT_DATA_DIR, *, include_token: bool = False) -> dict[str, Any]:
     with _PAIRING_LOCK:
         doc = _load_pairing_store(data_dir)
+    has_cloud = bool(str(doc.get("cloud_token") or "").strip())
     out = {
         "install_id": doc["install_id"],
-        "paired": bool(doc.get("paired_origins") or doc.get("cloud_token")),
+        "paired": bool(doc.get("paired_origins") or has_cloud),
+        "has_cloud_token": has_cloud,
+        "cloud_base_url": get_cloud_base_url(),
         "paired_origins": list(doc.get("paired_origins") or []),
         "paired_at": doc.get("paired_at"),
     }
@@ -234,6 +242,7 @@ def complete_pairing(
     code: str,
     *,
     origin: str | None = None,
+    host_header: str | None = None,
     cloud_token: str | None = None,
     data_dir: Path = DEFAULT_DATA_DIR,
 ) -> dict[str, Any]:
@@ -241,6 +250,11 @@ def complete_pairing(
     clean_code = str(code or "").strip()
     if not clean_code:
         raise ValueError("Pairing code is required")
+    clean_origin: str | None = None
+    if origin is not None and str(origin).strip():
+        clean_origin = str(origin).strip().rstrip("/")
+        if not is_allowed_companion_origin(clean_origin, host_header):
+            raise ValueError(f"Untrusted pairing origin: {clean_origin}")
     now = time.monotonic()
     with _PAIRING_LOCK:
         rec = _PENDING_PAIR_CODES.pop(clean_code, None)
@@ -248,8 +262,7 @@ def complete_pairing(
             raise ValueError("Invalid or expired pairing code")
         doc = _load_pairing_store(data_dir)
         origins = list(doc.get("paired_origins") or [])
-        if origin:
-            clean_origin = origin.strip().rstrip("/")
+        if clean_origin:
             if clean_origin not in origins:
                 origins.append(clean_origin)
         doc["paired_origins"] = origins
@@ -371,7 +384,17 @@ def lookup_remote_fightcade_meta(
         if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, dict) and data.get("ok") and isinstance(data.get("meta"), dict):
-                return data["meta"]
+                meta = dict(data["meta"])
+                if "stream_target" in meta:
+                    raw_st = meta.get("stream_target")
+                    if raw_st is None:
+                        meta.pop("stream_target", None)
+                    else:
+                        try:
+                            meta["stream_target"] = validate_stream_target(str(raw_st))
+                        except ValueError:
+                            meta.pop("stream_target", None)
+                return meta
     except Exception:  # noqa: BLE001
         pass
     return None

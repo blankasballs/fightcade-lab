@@ -103,6 +103,7 @@ from fightcade_analysis.companion_bridge import (
     build_pna_cors_headers,
     complete_pairing,
     extract_bearer_or_header_token,
+    get_cloud_base_url,
     get_pairing_state,
     is_allowed_companion_origin,
     is_cross_origin_allowed_web,
@@ -110,16 +111,26 @@ from fightcade_analysis.companion_bridge import (
     revoke_pairing,
     verify_pairing_token,
 )
-from fightcade_analysis.share_export import prepare_share_bundle
+from fightcade_analysis.share_export import (
+    CloudNotConnectedError,
+    CloudPublishError,
+    prepare_share_bundle,
+    publish_moment_to_cloud,
+    revoke_cloud_share_link,
+    rotate_cloud_share_link,
+)
 from fightcade_analysis.takeover import TakeoverManager, get_windows_desktop_name
+from fightcade_analysis.takeover_responses import TakeoverExportWatcher
 from fightcade_analysis.uri_scheme import is_uri_scheme_registered, register_uri_scheme
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
-_ALLOWED_ROOTS = frozenset({"reports", "clips", "replays", "share_exports"})
-_ALLOWED_ASSET_EXTS = frozenset({".css", ".js", ".svg", ".png", ".ico", ".json", ".webmanifest", ".map"})
+_ALLOWED_ROOTS = frozenset({"reports", "clips", "replays", "share_exports", "responses"})
+_ALLOWED_ASSET_EXTS = frozenset(
+    {".css", ".js", ".svg", ".png", ".ico", ".jpg", ".jpeg", ".webp", ".json", ".webmanifest", ".map"}
+)
 _BLOCKED_FILENAMES = frozenset({"gemini_summary_cache.json"})
 _MAX_API_BODY_BYTES = 65536
 _REPLAY_MANIFEST_API_RE = re.compile(r"^/api/replays/([A-Za-z0-9_-]{3,64})/manifest$")
@@ -137,6 +148,38 @@ _SHARED_PLAYLIST_PAGE_RE = re.compile(r"^/p/([A-Za-z0-9_-]{3,128})/?$")
 
 RELOAD_EXIT_CODE = 75
 RELOAD_TRIGGER_FILENAME = ".reload"
+
+_LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+_PUBLIC_CROSS_ORIGIN_GET_PATHS = frozenset({"/api/status", "/api/capabilities", "/api/companion/ping"})
+_HTML_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data: blob: https://cdn.discordapp.com; "
+    "media-src 'self' blob:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "
+    "connect-src 'self' http://127.0.0.1:8765 https://fightcadelab.com; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
+def _is_valid_host_header(host_header: str | None, allowed_hosts: set[str]) -> bool:
+    """Validate HTTP Host header against loopback / bound LAN IPs to prevent DNS rebinding."""
+    raw = (host_header or "").strip()
+    if not raw or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        return False
+    if any(ch in raw for ch in ("@", "/", "\\", "?", "#")):
+        return False
+    try:
+        parsed = urlsplit(f"http://{raw}")
+        _ = parsed.port
+    except ValueError:
+        return False
+    if parsed.username is not None or parsed.password is not None or parsed.path:
+        return False
+    hostname = (parsed.hostname or "").lower()
+    return bool(hostname) and hostname in allowed_hosts
 
 
 class ReloadTriggerWatcher:
@@ -294,6 +337,7 @@ def compute_capabilities(
     has_grouflon = bool(env_info.get("has_grouflon", False))
     disk_cache = get_mobile_replays_disk_usage(data_root)
     w_status = watcher.status() if watcher is not None else {}
+    pairing_st = get_pairing_state(data_root)
     return {
         "ok": True,
         "mode": "local_companion",
@@ -310,6 +354,9 @@ def compute_capabilities(
         "pro_corpus_sets": pro_sets,
         "pro_corpus_opt_in": opt_in,
         "pro_corpus_enabled": pro_corpus_enabled,
+        "companion_paired": bool(pairing_st.get("paired", False)),
+        "has_cloud_token": bool(pairing_st.get("has_cloud_token", False)),
+        "cloud_base_url": str(pairing_st.get("cloud_base_url") or get_cloud_base_url()),
         "disk_cache": disk_cache,
         "environment": env_info,
     }
@@ -341,6 +388,7 @@ def make_handler(
     takeover_launcher: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     takeover_manager: TakeoverManager | None = None,
     match_watcher: LiveMatchWatcher | None = None,
+    response_watcher: TakeoverExportWatcher | None = None,
     processing_queue: ProcessingQueue | None = None,
     insight_runner: InsightJobRunner | None = None,
     pro_search_service: ProSearchService | None = None,
@@ -349,9 +397,17 @@ def make_handler(
     bake_drill_fn: Callable[..., dict[str, Any]] | None = None,
     async_bake_drills: bool = True,
     pro_corpus_enabled: bool | None = None,
+    bound_host: str = DEFAULT_HOST,
 ) -> type[BaseHTTPRequestHandler]:
     data_root = data_dir.resolve()
     reports_dir = data_root / "reports"
+    bind_norm = str(bound_host or DEFAULT_HOST).strip().lower().strip("[]")
+    is_wildcard_bind = bind_norm in ("0.0.0.0", "::", "")
+    base_allowed_hosts: set[str] = set(_LOOPBACK_HOSTNAMES)
+    if is_wildcard_bind:
+        base_allowed_hosts.update(ip.lower() for ip in discover_local_ips())
+    elif bind_norm:
+        base_allowed_hosts.add(bind_norm)
     manager = takeover_manager or TakeoverManager(data_dir=data_root, bake_fn=bake_drill_fn)
     launcher = takeover_launcher or manager.launch
     watcher = match_watcher or LiveMatchWatcher(data_dir=data_root)
@@ -393,9 +449,37 @@ def make_handler(
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             print(f"[http] {self.address_string()} - {format % args}")
 
+        def _send_security_headers(self, *, is_html: bool = False) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            if is_html:
+                self.send_header("Content-Security-Policy", _HTML_CSP)
+
+        def _is_valid_host(self) -> bool:
+            allowed = set(base_allowed_hosts)
+            if is_wildcard_bind:
+                try:
+                    sock_ip = str(self.connection.getsockname()[0]).strip().lower()
+                    if sock_ip:
+                        allowed.add(sock_ip)
+                except Exception:  # noqa: BLE001
+                    pass
+            return _is_valid_host_header(self.headers.get("Host"), allowed)
+
+        def _reject_bad_host(self, *, drain_body: bool = False) -> None:
+            if drain_body:
+                self._drain_small_body()
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {"ok": False, "error": "Forbidden Host header (DNS rebinding protection)"},
+                close_conn=True,
+            )
+
         def _redirect(self, location: str) -> None:
             self.send_response(HTTPStatus.FOUND)
             self.send_header("Location", location)
+            self._send_security_headers(is_html=False)
             self.send_header("Content-Length", "0")
             self.end_headers()
 
@@ -403,6 +487,7 @@ def make_handler(
             body = f"{status.value} {status.phrase}: {msg}\n".encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self._send_security_headers(is_html=False)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if self.command != "HEAD":
@@ -419,6 +504,7 @@ def make_handler(
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", cache_control)
+            self._send_security_headers(is_html=content_type.lower().startswith("text/html"))
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if self.command != "HEAD":
@@ -436,6 +522,7 @@ def make_handler(
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            self._send_security_headers(is_html=False)
             self._send_pna_cors_headers()
             self.send_header("Content-Length", str(len(body)))
             if close_conn:
@@ -518,11 +605,20 @@ def make_handler(
                 return
 
             file_size = path.stat().st_size
+            ext = path.suffix.lower()
             ctype, _ = mimetypes.guess_type(str(path))
-            if path.suffix.lower() == ".js":
+            if ext == ".js":
                 ctype = "application/javascript; charset=utf-8"
-            elif path.suffix.lower() == ".css":
+            elif ext == ".css":
                 ctype = "text/css; charset=utf-8"
+            elif ext == ".ico":
+                ctype = "image/x-icon"
+            elif ext == ".png":
+                ctype = "image/png"
+            elif ext in (".jpg", ".jpeg"):
+                ctype = "image/jpeg"
+            elif ext == ".webp":
+                ctype = "image/webp"
             elif not ctype:
                 ctype = "application/octet-stream"
             elif ctype.startswith("text/"):
@@ -551,6 +647,8 @@ def make_handler(
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
                 self.send_header("Content-Length", str(length))
                 self.send_header("Cache-Control", default_cc)
+                self._send_security_headers(is_html=ctype.lower().startswith("text/html"))
+                self._send_pna_cors_headers()
                 self.end_headers()
                 if send_body:
                     self._stream_slice(path, start, length)
@@ -565,7 +663,12 @@ def make_handler(
                 self.send_header("Content-Encoding", "gzip")
                 self.send_header("Vary", "Accept-Encoding")
                 self.send_header("Content-Length", str(len(gz_bytes)))
-                self.send_header("Cache-Control", "public, max-age=3600" if path.name.endswith("_overlay.json") else "no-cache")
+                self.send_header(
+                    "Cache-Control",
+                    "public, max-age=3600" if (path.name.endswith("_overlay.json") or path.name == "overlay.json") else "no-cache",
+                )
+                self._send_security_headers(is_html=False)
+                self._send_pna_cors_headers()
                 self.end_headers()
                 if send_body:
                     self.wfile.write(gz_bytes)
@@ -576,6 +679,8 @@ def make_handler(
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(file_size))
             self.send_header("Cache-Control", default_cc)
+            self._send_security_headers(is_html=ctype.lower().startswith("text/html"))
+            self._send_pna_cors_headers()
             self.end_headers()
             if send_body:
                 self._stream_slice(path, 0, file_size)
@@ -596,9 +701,29 @@ def make_handler(
                     remaining -= len(chunk)
 
         def _handle(self, *, send_body: bool) -> None:
+            if not self._is_valid_host():
+                self._reject_bad_host()
+                return
+
             parsed = urlsplit(self.path)
             req_path = unquote(parsed.path)
             qs = parse_qs(parsed.query)
+
+            # Cross-origin GET/HEAD token guard: protect all private /api/* & local media routes
+            # while leaving only discovery pings (/api/status, /api/capabilities, /api/companion/ping) readable.
+            if not self._is_same_origin():
+                is_private_get = (
+                    (req_path.startswith("/api/") and req_path not in _PUBLIC_CROSS_ORIGIN_GET_PATHS)
+                    or req_path in ("/reports", "/reports/")
+                    or req_path.startswith(("/replays/", "/clips/", "/reports/", "/share_exports/", "/responses/"))
+                )
+                if is_private_get and not self._is_authorized_cross_origin(req_path):
+                    self._send_json(
+                        HTTPStatus.FORBIDDEN,
+                        {"ok": False, "error": "Cross-origin GET request blocked (pair Companion first)"},
+                        close_conn=True,
+                    )
+                    return
 
             # Unified Fightcade Lab App Shell at `/` (with `/review` & `/mobile` seamless aliases)
             if req_path in ("", "/", "/review", "/review/", "/mobile", "/mobile/"):
@@ -623,6 +748,20 @@ def make_handler(
                     initial_route=f"p/{m_shared_p.group(1)}",
                 )
                 self._send_bytes(HTTPStatus.OK, html_str.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if req_path == "/favicon.ico":
+                self._serve_file(
+                    WEB_ASSETS_DIR / "favicon.ico",
+                    send_body=send_body,
+                    cache_control_override="public, max-age=86400",
+                )
+                return
+            if req_path == "/apple-touch-icon.png":
+                self._serve_file(
+                    WEB_ASSETS_DIR / "apple-touch-icon.png",
+                    send_body=send_body,
+                    cache_control_override="public, max-age=86400",
+                )
                 return
             if req_path in ("/manifest.webmanifest", "/review/manifest.webmanifest", "/mobile/manifest.webmanifest"):
                 self._send_bytes(
@@ -652,6 +791,8 @@ def make_handler(
                         "companion_version": "0.1.0",
                         "install_id": pairing["install_id"],
                         "paired": pairing["paired"],
+                        "has_cloud_token": bool(pairing.get("has_cloud_token", False)),
+                        "cloud_base_url": pairing.get("cloud_base_url") or get_cloud_base_url(),
                         "token_valid": tok_ok,
                         "can_takeover": bool(get_caps().get("can_takeover")),
                         "uri_scheme_registered": is_uri_scheme_registered(),
@@ -690,10 +831,10 @@ def make_handler(
                 matches = cat.get("matches") or []
                 latest_match = matches[0] if matches else None
                 recent_matches = matches[1:4]
-                active_goals = list_focus_goals(data_root, status="active", owner=uname)
-                graduated_goals = list_focus_goals(data_root, status="graduated", owner=uname)
-                all_playlists = list_playlists(data_root, owner=uname, username=uname, enrich=True)
-                notes_res = list_collated_notes(username=uname, data_dir=data_root, include_select_marks=True)
+                active_goals = list_focus_goals(data_root, status="active", owner=uname, username=uname, enrich=True)
+                graduated_goals = list_focus_goals(data_root, status="graduated", owner=uname, username=uname, enrich=False)
+                ref_playlists = list_playlists(data_root, owner=uname, username=uname, enrich=True, is_focus=False)
+                notes_res = list_collated_notes(username=uname, data_dir=data_root, include_select_marks=False)
                 nc = notes_res.get("counts") or {}
                 latest_insight = None
                 if _is_pro_corpus_allowed():
@@ -722,8 +863,8 @@ def make_handler(
                             "graduated_count": len(graduated_goals),
                             "max_active": MAX_ACTIVE_GOALS,
                         },
-                        "playlists": all_playlists[:4],
-                        "playlists_total": len(all_playlists),
+                        "playlists": ref_playlists[:4],
+                        "playlists_total": len(ref_playlists),
                         "pulse": {
                             "notes_total": int(nc.get("total") or 0),
                             "matchups_count": int(nc.get("matchups_count") or 0),
@@ -736,6 +877,7 @@ def make_handler(
 
             if req_path == "/api/status":
                 desktop_name, is_interactive = get_windows_desktop_name()
+                resp_st = response_watcher.status() if response_watcher is not None else {}
                 self._send_json(
                     HTTPStatus.OK,
                     {
@@ -747,6 +889,9 @@ def make_handler(
                         "interactive_desktop": is_interactive,
                         "active_takeover_pid": manager.active_pid(),
                         "watcher": watcher.status(),
+                        "last_response_at": resp_st.get("last_response_at"),
+                        "last_response_id": resp_st.get("last_response_id"),
+                        "pending_responses": int(resp_st.get("pending_responses") or 0),
                         "jobs": _combined_jobs()[:10],
                     },
                 )
@@ -798,8 +943,9 @@ def make_handler(
             if req_path == "/api/focus-goals":
                 st = (qs.get("status") or ["all"])[0].strip() or "all"
                 owner = (qs.get("owner") or [""])[0].strip() or None
+                uname = (qs.get("username") or [""])[0].strip() or owner
                 try:
-                    goals = list_focus_goals(data_root, status=st, owner=owner)
+                    goals = list_focus_goals(data_root, status=st, owner=owner, username=uname, enrich=True)
                 except ValueError as exc:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                     return
@@ -816,7 +962,25 @@ def make_handler(
             if req_path == "/api/playlists":
                 owner = (qs.get("owner") or [""])[0].strip() or None
                 uname = (qs.get("username") or [""])[0].strip() or owner
-                pls = list_playlists(data_root, owner=owner, username=uname, enrich=True)
+                raw_focus = (qs.get("is_focus") or [""])[0].strip().lower()
+                is_focus_filter: bool | None = None
+                if raw_focus in ("1", "true", "yes"):
+                    is_focus_filter = True
+                elif raw_focus in ("0", "false", "no"):
+                    is_focus_filter = False
+                raw_fs = (qs.get("focus_status") or [""])[0].strip().lower() or None
+                try:
+                    pls = list_playlists(
+                        data_root,
+                        owner=owner,
+                        username=uname,
+                        enrich=True,
+                        is_focus=is_focus_filter,
+                        focus_status=raw_fs,
+                    )
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                    return
                 self._send_json(HTTPStatus.OK, {"ok": True, "playlists": pls})
                 return
 
@@ -891,7 +1055,7 @@ def make_handler(
                         "ok": True,
                         "manifest": mf_doc,
                         "annotations": list_annotations(data_root, quark_id=qid),
-                        "select_marks": _select_marks_for_replay(qid, data_root),
+                        "select_marks": [],
                         "set_note": get_set_note(qid, data_dir=data_root),
                     },
                 )
@@ -899,8 +1063,8 @@ def make_handler(
 
             if req_path == "/api/notes":
                 uname = (qs.get("username") or [""])[0].strip() or None
-                inc_sel_raw = (qs.get("include_select_marks") or ["1"])[0].strip().lower()
-                inc_sel = inc_sel_raw not in ("0", "false", "no")
+                inc_sel_raw = (qs.get("include_select_marks") or ["0"])[0].strip().lower()
+                inc_sel = inc_sel_raw in ("1", "true", "yes")
                 res = list_collated_notes(
                     username=uname,
                     data_dir=data_root,
@@ -951,12 +1115,16 @@ def make_handler(
             self._serve_file(resolved, send_body=send_body)
 
         def do_OPTIONS(self) -> None:  # noqa: N802
+            if not self._is_valid_host():
+                self._reject_bad_host()
+                return
             origin = self.headers.get("Origin")
             host = self.headers.get("Host")
             if not is_allowed_companion_origin(origin, host):
                 self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "Origin not allowed"}, close_conn=True)
                 return
             self.send_response(HTTPStatus.NO_CONTENT)
+            self._send_security_headers(is_html=False)
             self._send_pna_cors_headers()
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -968,6 +1136,9 @@ def make_handler(
             self._handle(send_body=False)
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._is_valid_host():
+                self._reject_bad_host(drain_body=True)
+                return
             req_path = unquote(urlsplit(self.path).path)
             m_ov = _REPLAY_OVERLAYS_API_RE.match(req_path)
             m_pl_items = _PLAYLIST_ITEMS_API_RE.match(req_path)
@@ -986,7 +1157,11 @@ def make_handler(
                 "/api/pro-search",
                 "/api/pro-search/render-clip",
                 "/api/share/prepare",
+                "/api/share/publish",
+                "/api/share/rotate",
+                "/api/share/revoke",
                 "/api/companion/pair-code",
+                "/api/companion/pair-start",
                 "/api/companion/pair",
                 "/api/companion/unpair",
                 "/api/watcher/pause",
@@ -1000,7 +1175,7 @@ def make_handler(
             if payload is None:
                 return
 
-            if req_path == "/api/companion/pair-code":
+            if req_path in ("/api/companion/pair-code", "/api/companion/pair-start"):
                 if not self._is_same_origin():
                     self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "Pairing codes can only be issued locally"})
                     return
@@ -1009,10 +1184,25 @@ def make_handler(
 
             if req_path == "/api/companion/pair":
                 code = str(payload.get("code") or "").strip()
-                origin = self.headers.get("Origin") or str(payload.get("origin") or "").strip() or None
+                host = self.headers.get("Host")
+                hdr_origin = (self.headers.get("Origin") or "").strip() or None
+                body_origin = str(payload.get("origin") or "").strip() or None
+                if body_origin and not is_allowed_companion_origin(body_origin, host):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "Untrusted pairing origin"})
+                    return
+                origin = hdr_origin or body_origin
+                if origin and not is_allowed_companion_origin(origin, host):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "Untrusted pairing origin"})
+                    return
                 cloud_tok = str(payload.get("cloud_token") or "").strip() or None
                 try:
-                    res = complete_pairing(code, origin=origin, cloud_token=cloud_tok, data_dir=data_root)
+                    res = complete_pairing(
+                        code,
+                        origin=origin,
+                        host_header=host,
+                        cloud_token=cloud_tok,
+                        data_dir=data_root,
+                    )
                 except ValueError as exc:
                     self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": str(exc)})
                     return
@@ -1209,6 +1399,100 @@ def make_handler(
                 self._send_json(HTTPStatus.OK, res)
                 return
 
+            if req_path == "/api/share/publish":
+                try:
+                    res = publish_moment_to_cloud(payload, data_dir=data_root)
+                except CloudNotConnectedError as exc:
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED,
+                        {"ok": False, "code": "cloud_not_connected", "error": str(exc)},
+                    )
+                    return
+                except CloudPublishError as exc:
+                    st = exc.status_code if 400 <= exc.status_code <= 599 else 502
+                    body_err: dict[str, Any] = {"ok": False, "error": str(exc)}
+                    if exc.code:
+                        body_err["code"] = exc.code
+                    self._send_json(st, body_err)
+                    return
+                except (ValueError, TypeError) as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                    return
+                except FileNotFoundError as exc:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": str(exc)})
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+                    return
+                self._send_json(HTTPStatus.OK, res)
+                return
+
+            if req_path == "/api/share/rotate":
+                try:
+                    mid = str(payload.get("moment_id") or payload.get("id") or payload.get("item_id") or "").strip()
+                    src = str(payload.get("source") or "").strip().lower()
+                    cm_id = str(payload.get("cloud_moment_id") or "").strip() or None
+                    res = rotate_cloud_share_link(
+                        mid,
+                        source=src,
+                        cloud_moment_id=cm_id,
+                        data_dir=data_root,
+                    )
+                except CloudNotConnectedError as exc:
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED,
+                        {"ok": False, "code": "cloud_not_connected", "error": str(exc)},
+                    )
+                    return
+                except CloudPublishError as exc:
+                    st = exc.status_code if 400 <= exc.status_code <= 599 else 502
+                    body_err = {"ok": False, "error": str(exc)}
+                    if exc.code:
+                        body_err["code"] = exc.code
+                    self._send_json(st, body_err)
+                    return
+                except (ValueError, TypeError) as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+                    return
+                self._send_json(HTTPStatus.OK, res)
+                return
+
+            if req_path == "/api/share/revoke":
+                try:
+                    mid = str(payload.get("moment_id") or payload.get("id") or payload.get("item_id") or "").strip()
+                    src = str(payload.get("source") or "").strip().lower()
+                    cm_id = str(payload.get("cloud_moment_id") or "").strip() or None
+                    res = revoke_cloud_share_link(
+                        mid,
+                        source=src,
+                        cloud_moment_id=cm_id,
+                        data_dir=data_root,
+                    )
+                except CloudNotConnectedError as exc:
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED,
+                        {"ok": False, "code": "cloud_not_connected", "error": str(exc)},
+                    )
+                    return
+                except CloudPublishError as exc:
+                    st = exc.status_code if 400 <= exc.status_code <= 599 else 502
+                    body_err = {"ok": False, "error": str(exc)}
+                    if exc.code:
+                        body_err["code"] = exc.code
+                    self._send_json(st, body_err)
+                    return
+                except (ValueError, TypeError) as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+                    return
+                self._send_json(HTTPStatus.OK, res)
+                return
+
             if req_path == "/api/pro-search":
                 if not _is_pro_corpus_allowed():
                     self._send_json(
@@ -1216,7 +1500,7 @@ def make_handler(
                         {
                             "ok": False,
                             "pro_corpus_enabled": False,
-                            "error": "Pro Corpus Search is on the roadmap (disabled by default). Set FC_ENABLE_PRO_CORPUS=1 locally to enable.",
+                            "error": "Top-Rank Search is on the roadmap (disabled by default). Set FC_ENABLE_PRO_CORPUS=1 locally to enable.",
                         },
                     )
                     return
@@ -1249,7 +1533,7 @@ def make_handler(
                         {
                             "ok": False,
                             "pro_corpus_enabled": False,
-                            "error": "Pro Corpus clip rendering is on the roadmap (disabled by default). Set FC_ENABLE_PRO_CORPUS=1 locally to enable.",
+                            "error": "Top-Rank clip rendering is on the roadmap (disabled by default). Set FC_ENABLE_PRO_CORPUS=1 locally to enable.",
                         },
                     )
                     return
@@ -1448,9 +1732,12 @@ def make_handler(
             self._send_json(HTTPStatus.OK, result)
 
         def do_PATCH(self) -> None:  # noqa: N802
+            if not self._is_valid_host():
+                self._reject_bad_host(drain_body=True)
+                return
             req_path = unquote(urlsplit(self.path).path)
             if req_path == "/api/settings":
-                payload = self._read_json_body()
+                payload = self._read_json_body(req_path=req_path)
                 if payload is None:
                     return
                 updates: dict[str, Any] = {}
@@ -1491,7 +1778,7 @@ def make_handler(
             if not m_ann and not m_q and not m_goal and not m_pl:
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Unknown PATCH endpoint"}, close_conn=True)
                 return
-            payload = self._read_json_body()
+            payload = self._read_json_body(req_path=req_path)
             if payload is None:
                 return
 
@@ -1552,6 +1839,9 @@ def make_handler(
             self._send_json(HTTPStatus.OK, {"ok": True, "annotation": updated})
 
         def do_DELETE(self) -> None:  # noqa: N802
+            if not self._is_valid_host():
+                self._reject_bad_host()
+                return
             req_path = unquote(urlsplit(self.path).path)
             m_ann = _ANN_ITEM_API_RE.match(req_path)
             m_goal = _GOAL_ITEM_API_RE.match(req_path)
@@ -1640,6 +1930,7 @@ def create_server(
     takeover_launcher: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     takeover_manager: TakeoverManager | None = None,
     match_watcher: LiveMatchWatcher | None = None,
+    response_watcher: TakeoverExportWatcher | None = None,
     processing_queue: ProcessingQueue | None = None,
     insight_runner: InsightJobRunner | None = None,
     pro_search_service: ProSearchService | None = None,
@@ -1659,6 +1950,7 @@ def create_server(
         takeover_launcher=takeover_launcher,
         takeover_manager=takeover_manager,
         match_watcher=watcher,
+        response_watcher=response_watcher,
         processing_queue=processing_queue,
         insight_runner=insight_runner,
         pro_search_service=pro_search_service,
@@ -1667,9 +1959,11 @@ def create_server(
         bake_drill_fn=bake_drill_fn,
         async_bake_drills=async_bake_drills,
         pro_corpus_enabled=pro_corpus_enabled,
+        bound_host=host,
     )
     srv = _FightcadeHTTPServer((host, port), handler_cls)
     srv.fc_watcher = watcher  # type: ignore[attr-defined]
+    srv.fc_response_watcher = response_watcher  # type: ignore[attr-defined]
     return srv
 
 
@@ -1705,6 +1999,7 @@ def main(argv: list[str] | None = None) -> int:
             proc_queue_holder[0].enqueue(qid, perspective=persp, source="live_watcher")
 
     watcher = LiveMatchWatcher(data_dir=args.data_dir, on_match_scanned=_on_live_match_scanned)
+    response_watcher = TakeoverExportWatcher(data_dir=args.data_dir)
     proc_queue = ProcessingQueue(data_dir=args.data_dir, is_live_match_fn=watcher.is_in_match)
     proc_queue_holder.append(proc_queue)
     ins_runner = InsightJobRunner(data_dir=args.data_dir, is_live_match_fn=watcher.is_in_match)
@@ -1717,6 +2012,7 @@ def main(argv: list[str] | None = None) -> int:
             data_dir=args.data_dir,
             auto_refresh_index=not args.no_auto_refresh,
             match_watcher=watcher,
+            response_watcher=response_watcher,
             processing_queue=proc_queue,
             insight_runner=ins_runner,
             pro_search_service=pro_svc,
@@ -1733,12 +2029,13 @@ def main(argv: list[str] | None = None) -> int:
         raise
 
     proc_queue.start()
+    response_watcher.start()
     if not args.no_watch_matches:
         watcher.start()
 
     actual_port = server.server_address[1]
     desktop_name, is_interactive = get_windows_desktop_name()
-    print(f"Serving Fightcade Lab (scoped to {args.data_dir.resolve()}\\{{reports,clips,replays}})")
+    print(f"Serving Fightcade Lab (scoped to {args.data_dir.resolve()}\\{{reports,clips,replays,responses}})")
     print(f"  Fightcade Lab : http://127.0.0.1:{actual_port}/")
     if bind_host in ("0.0.0.0", "::"):
         for ip in discover_local_ips():
@@ -1757,7 +2054,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Select-Mark Watcher: ACTIVE (tap Select/Coin during live matches{auto_str})")
 
     def _is_busy() -> bool:
-        if proc_queue.has_running_job() or ins_runner.has_running_job():
+        if proc_queue.has_running_job() or ins_runner.has_running_job() or response_watcher.is_busy():
             return True
         phase = str(watcher.status().get("phase") or "")
         return phase in ("scanning", "waiting_replay")
@@ -1777,6 +2074,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\nStopping server.")
     finally:
         reload_watcher.stop()
+        response_watcher.stop()
         ins_runner.stop()
         proc_queue.stop()
         watcher.stop()

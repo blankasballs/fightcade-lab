@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./src/fightcade_analysis/web/img/header-astro-lab.jpg" alt="Fightcade Lab — Astro City candy cabinet and lab flask" width="760" />
+</p>
+
 # Fightcade Lab
 
 **A free, open-source Replay Studio, Matchup Notebook, and Instant Replay Takeover trainer for Fightcade** — starting with *Street Fighter III: 3rd Strike*.
@@ -12,7 +16,7 @@
 
 - **Frame-Accurate Replay Studio:** Scrub every round at 60fps on desktop or your phone (over LAN/VPN) with an interactive HP timeline, instant P1/P2 perspective flip, and toggleable hitboxes, inputs, sticks, and gauges.
 - **Instant Replay Takeover:** Click any moment to drop straight into FBNeo at that exact frame — with slow-mo, one-button retry, and a Training Sandbox to test answers on the spot.
-- **Zero-Friction Capture:** Tap `Select` during live matches to bookmark tough spots; your sets are captured silently in the background the moment your match ends.
+- **Zero-Friction Capture:** Your Fightcade sets are captured silently in the background the moment your match ends, ready to scrub and annotate in Replay Studio.
 - **Focus Goals, Notes & Playlists:** Keep a searchable matchup notebook, pin up to 3 active improvement goals, and group moments into Playlists you can watch back-to-back or drill in Takeover.
 
 ---
@@ -37,9 +41,8 @@
 4. *(Optional)* Install [Grouflon's `3rd_training_lua`](https://github.com/Grouflon/3rd_training_lua) in your Fightcade FBNeo folder to unlock Hitbox/Gauge overlays and Sandbox Training Mode.
 
 <details>
-<summary><strong>Quick Controls Reference (In-Game & Replay Takeover)</strong></summary>
+<summary><strong>Quick Controls Reference (Replay Takeover)</strong></summary>
 
-- **During live Fightcade matches:** Tap **`Select` (`Coin`)** anytime a sequence gives you trouble — Fightcade records it natively into the replay stream, and Fightcade Lab flags it automatically after the set.
 - **During Replay Takeover:**
   - **`Select` (`Coin`)** or **`Alt+1`** — Instant 1-frame retry
   - **`Start`** — Open in-game Takeover menu (Game Speed `25%–125%`, Countdown delay, Sandbox Training Mode, P1/P2 swap)
@@ -98,7 +101,7 @@ tests/              Automated Python unit & integration tests (pytest)
 
 - **Web Clip Sharing & Feedback (https://fightcadelab.com):** Share short moments and playlists with playable Discord previews and frame-pinned coaching replies.
 - **Multi-Game Support:** Expanding beyond *3rd Strike* to *KOF 2002*, *Vampire Savior*, *Super Turbo*, and other Fightcade FBNeo classics.
-- **Pro-Match Comparison ("Find Pro Answers"):** Exploring Fightcade-friendly ways to compare tough sequences against high-level play once community demand aligns.
+- **Top-Rank Match Comparison ("Top-Rank Answers"):** Exploring Fightcade-friendly ways to compare tough sequences against high-level play once community demand aligns.
 
 ---
 

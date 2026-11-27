@@ -1,98 +1,63 @@
-"""Pinned Focus Goals (max 3 active per owner) & Graduated Progress History.
+"""Thin Focus Goals adapter backed by unified `playlists.py` (`is_focus=True`).
 
-Persisted atomically in `data/selections/focus_goals.jsonl`.
-Supports optional `owner` scoping so multi-user / hosted tiers require zero schema rewrites.
+Preserves `/api/focus-goals*` API ergonomics while storing all Focus Goals and
+Playlists in one single source of truth (`data/selections/playlists.jsonl`).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
-import re
-import threading
 from typing import Any
-import uuid
 
 from fightcade_analysis.clip_renderer import DEFAULT_DATA_DIR
-from fightcade_analysis.select_queue import _read_jsonl, _write_jsonl_atomic
+from fightcade_analysis.playlists import (
+    MAX_ACTIVE_FOCUSES,
+    VALID_FOCUS_STATUSES,
+    create_playlist,
+    delete_playlist,
+    get_playlist,
+    legacy_focus_goals_jsonl_path,
+    list_playlists,
+    update_playlist,
+)
 
-MAX_ACTIVE_GOALS = 3
+MAX_ACTIVE_GOALS = MAX_ACTIVE_FOCUSES
 VALID_GOAL_STATUSES: frozenset[str] = frozenset({"active", "graduated", "archived"})
-_GOAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,128}$")
-_GOALS_LOCK = threading.Lock()
 
 
 def focus_goals_jsonl_path(data_dir: Path = DEFAULT_DATA_DIR) -> Path:
-    return data_dir.resolve() / "selections" / "focus_goals.jsonl"
+    """Path to the legacy `focus_goals.jsonl` file (auto-migrated into `playlists.jsonl`)."""
+    return legacy_focus_goals_jsonl_path(data_dir)
 
 
-def _sanitize_tags(raw_tags: Any) -> list[str]:
-    if not raw_tags:
-        return []
-    if isinstance(raw_tags, str):
-        raw_tags = [t.strip() for t in raw_tags.split(",")]
-    if not isinstance(raw_tags, list):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for t in raw_tags:
-        clean = " ".join(str(t or "").strip().split())[:40]
-        if clean and clean.lower() not in seen:
-            seen.add(clean.lower())
-            out.append(clean)
-        if len(out) >= 12:
-            break
-    return out
-
-
-def _sanitize_text(raw: Any, *, max_len: int = 160) -> str:
-    return " ".join(str(raw or "").replace("\r", " ").replace("\n", " ").split())[:max_len]
-
-
-def _sanitize_multiline(raw: Any, *, max_len: int = 1200) -> str:
-    return str(raw or "").replace("\r\n", "\n").replace("\r", "\n").strip()[:max_len]
-
-
-def _normalize_goal(raw: dict[str, Any]) -> dict[str, Any]:
-    now_iso = datetime.now().isoformat(timespec="seconds")
-    status = str(raw.get("status") or "active").strip().lower()
-    if status not in VALID_GOAL_STATUSES:
-        status = "active"
+def _playlist_to_goal_view(pl: dict[str, Any]) -> dict[str, Any]:
+    items = list(pl.get("items") or [])
+    ready_cnt = int(pl.get("ready_drills_count", pl.get("takeover_ready_count", 0)) or 0)
+    status = str(pl.get("focus_status") or ("active" if pl.get("is_focus") else "archived"))
     return {
-        "id": str(raw.get("id") or ""),
-        "owner": str(raw.get("owner") or "").strip(),
-        "title": _sanitize_text(raw.get("title"), max_len=160),
-        "description": _sanitize_multiline(raw.get("description"), max_len=1200),
+        "id": pl["id"],
+        "owner": pl.get("owner", ""),
+        "title": pl.get("name", ""),
+        "name": pl.get("name", ""),
+        "description": pl.get("description", ""),
         "status": status,
-        "matchup_char": _sanitize_text(raw.get("matchup_char"), max_len=40),
-        "tags": _sanitize_tags(raw.get("tags")),
-        "playlist_id": str(raw.get("playlist_id") or "").strip() or None,
-        "source_insight_id": str(raw.get("source_insight_id") or "").strip() or None,
-        "trend_hint": _sanitize_text(raw.get("trend_hint"), max_len=64),
-        "created_at": str(raw.get("created_at") or now_iso),
-        "updated_at": str(raw.get("updated_at") or now_iso),
-        "graduated_at": str(raw.get("graduated_at") or "").strip() or None,
+        "focus_status": pl.get("focus_status"),
+        "is_focus": bool(pl.get("is_focus", False)),
+        "kind": pl.get("kind", "drill"),
+        "shareable": bool(pl.get("shareable", False)),
+        "matchup_char": pl.get("matchup_char", ""),
+        "tags": list(pl.get("tags") or []),
+        "source_insight_id": pl.get("source_insight_id"),
+        "trend_hint": pl.get("trend_hint", ""),
+        "items": items,
+        "item_count": int(pl.get("item_count", len(items))),
+        "ready_drills_count": ready_cnt,
+        "takeover_ready_count": ready_cnt,
+        "pro_clips_count": int(pl.get("pro_clips_count", 0) or 0),
+        "created_at": pl.get("created_at"),
+        "updated_at": pl.get("updated_at"),
+        "graduated_at": pl.get("graduated_at"),
     }
-
-
-def _owner_matches(rec_owner: str, req_owner: str | None) -> bool:
-    if not req_owner:
-        return True
-    if not rec_owner:
-        return True
-    return rec_owner.strip().lower() == req_owner.strip().lower()
-
-
-def _active_count_for_owner(items: list[dict[str, Any]], owner: str) -> int:
-    owner_low = (owner or "").strip().lower()
-    count = 0
-    for it in items:
-        if str(it.get("status") or "active") != "active":
-            continue
-        it_owner = str(it.get("owner") or "").strip().lower()
-        if not owner_low or not it_owner or it_owner == owner_low:
-            count += 1
-    return count
 
 
 def list_focus_goals(
@@ -100,33 +65,46 @@ def list_focus_goals(
     *,
     status: str = "all",
     owner: str | None = None,
+    username: str | None = None,
+    enrich: bool = True,
 ) -> list[dict[str, Any]]:
     st_filter = (status or "all").strip().lower()
     if st_filter != "all" and st_filter not in VALID_GOAL_STATUSES:
         raise ValueError(f"Invalid status filter: {status!r}")
-    with _GOALS_LOCK:
-        raw_items = _read_jsonl(focus_goals_jsonl_path(data_dir))
-    goals = [_normalize_goal(it) for it in raw_items if it.get("id")]
-    if owner:
-        goals = [g for g in goals if _owner_matches(g["owner"], owner)]
-    if st_filter != "all":
-        goals = [g for g in goals if g["status"] == st_filter]
-    # Active goals sorted oldest-first (stable pin order); graduated newest-first
+    if st_filter == "archived":
+        # Archived goals are unpinned to Reference Playlists
+        return []
+
+    fs_param = st_filter if st_filter in VALID_FOCUS_STATUSES else None
+    pls = list_playlists(
+        data_dir=data_dir,
+        owner=owner,
+        username=username or owner,
+        enrich=enrich,
+        is_focus=True,
+        focus_status=fs_param,
+    )
+    goals = [_playlist_to_goal_view(p) for p in pls]
+
     if st_filter == "graduated":
         goals.sort(key=lambda g: str(g.get("graduated_at") or g.get("updated_at") or ""), reverse=True)
     else:
-        status_rank = {"active": 0, "graduated": 1, "archived": 2}
+        status_rank = {"active": 0, "graduated": 1}
         goals.sort(key=lambda g: (status_rank.get(g["status"], 9), str(g.get("created_at") or "")))
     return goals
 
 
-def get_focus_goal(goal_id: str, data_dir: Path = DEFAULT_DATA_DIR) -> dict[str, Any] | None:
-    with _GOALS_LOCK:
-        raw_items = _read_jsonl(focus_goals_jsonl_path(data_dir))
-    for it in raw_items:
-        if str(it.get("id")) == str(goal_id):
-            return _normalize_goal(it)
-    return None
+def get_focus_goal(
+    goal_id: str,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    *,
+    username: str | None = None,
+    enrich: bool = True,
+) -> dict[str, Any] | None:
+    pl = get_playlist(goal_id, data_dir=data_dir, username=username, enrich=enrich)
+    if pl is None or not pl.get("is_focus"):
+        return None
+    return _playlist_to_goal_view(pl)
 
 
 def create_focus_goal(
@@ -136,47 +114,33 @@ def create_focus_goal(
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Focus goal payload must be a JSON object")
-    title = _sanitize_text(payload.get("title"), max_len=160)
+    title = str(payload.get("title") or payload.get("name") or "").strip()
     if not title:
         raise ValueError("Focus goal title is required")
 
-    status = str(payload.get("status") or "active").strip().lower()
-    if status not in VALID_GOAL_STATUSES:
+    raw_status = str(payload.get("status") or payload.get("focus_status") or "active").strip().lower()
+    if raw_status not in VALID_GOAL_STATUSES:
         raise ValueError(f"status must be one of: {', '.join(sorted(VALID_GOAL_STATUSES))}")
 
-    owner = str(payload.get("owner") or "").strip()
-    now_iso = datetime.now().isoformat(timespec="seconds")
-    goal_id = f"goal_{uuid.uuid4().hex[:8]}"
+    is_focus = raw_status != "archived"
+    focus_status: str | None = raw_status if is_focus else None
 
-    record = _normalize_goal(
-        {
-            "id": goal_id,
-            "owner": owner,
-            "title": title,
-            "description": payload.get("description") or "",
-            "status": status,
-            "matchup_char": payload.get("matchup_char") or "",
-            "tags": payload.get("tags") or [],
-            "playlist_id": payload.get("playlist_id") or None,
-            "source_insight_id": payload.get("source_insight_id") or None,
-            "trend_hint": payload.get("trend_hint") or "",
-            "created_at": now_iso,
-            "updated_at": now_iso,
-            "graduated_at": now_iso if status == "graduated" else None,
-        }
-    )
-
-    with _GOALS_LOCK:
-        path = focus_goals_jsonl_path(data_dir)
-        items = _read_jsonl(path)
-        if status == "active" and _active_count_for_owner(items, owner) >= MAX_ACTIVE_GOALS:
-            raise ValueError(
-                f"Maximum of {MAX_ACTIVE_GOALS} active Focus Goals reached. "
-                "Graduate or archive an active goal before pinning a new one."
-            )
-        items.append(record)
-        _write_jsonl_atomic(path, items)
-    return record
+    pl_payload: dict[str, Any] = {
+        "owner": payload.get("owner") or "",
+        "name": title,
+        "description": payload.get("description") or "",
+        "kind": payload.get("kind") or "drill",
+        "shareable": bool(payload.get("shareable", False)),
+        "is_focus": is_focus,
+        "focus_status": focus_status,
+        "matchup_char": payload.get("matchup_char") or "",
+        "tags": payload.get("tags") or [],
+        "source_insight_id": payload.get("source_insight_id") or None,
+        "trend_hint": payload.get("trend_hint") or "",
+        "items": payload.get("items") or [],
+    }
+    created = create_playlist(pl_payload, data_dir=data_dir, id_prefix="goal")
+    return _playlist_to_goal_view(created)
 
 
 def update_focus_goal(
@@ -185,95 +149,48 @@ def update_focus_goal(
     *,
     data_dir: Path = DEFAULT_DATA_DIR,
 ) -> dict[str, Any] | None:
-    if not _GOAL_ID_RE.match(str(goal_id or "")):
-        raise ValueError("Invalid focus goal id")
     if not isinstance(patch, dict):
         raise ValueError("Patch payload must be a JSON object")
 
-    now_iso = datetime.now().isoformat(timespec="seconds")
-    with _GOALS_LOCK:
-        path = focus_goals_jsonl_path(data_dir)
-        items = _read_jsonl(path)
-        updated: dict[str, Any] | None = None
-        for idx, raw in enumerate(items):
-            if str(raw.get("id")) != str(goal_id):
-                continue
-            cur = _normalize_goal(raw)
-            old_status = cur["status"]
+    pl_patch: dict[str, Any] = {}
+    if "title" in patch:
+        pl_patch["name"] = patch["title"]
+    elif "name" in patch:
+        pl_patch["name"] = patch["name"]
 
-            if "title" in patch:
-                new_title = _sanitize_text(patch["title"], max_len=160)
-                if not new_title:
-                    raise ValueError("Focus goal title cannot be empty")
-                cur["title"] = new_title
-            if "description" in patch:
-                cur["description"] = _sanitize_multiline(patch["description"], max_len=1200)
-            if "matchup_char" in patch:
-                cur["matchup_char"] = _sanitize_text(patch["matchup_char"], max_len=40)
-            if "tags" in patch:
-                cur["tags"] = _sanitize_tags(patch["tags"])
-            if "playlist_id" in patch:
-                cur["playlist_id"] = str(patch["playlist_id"] or "").strip() or None
-            if "source_insight_id" in patch:
-                cur["source_insight_id"] = str(patch["source_insight_id"] or "").strip() or None
-            if "trend_hint" in patch:
-                cur["trend_hint"] = _sanitize_text(patch["trend_hint"], max_len=64)
-            if "owner" in patch:
-                cur["owner"] = str(patch["owner"] or "").strip()
-            if "status" in patch:
-                new_status = str(patch["status"] or "").strip().lower()
-                if new_status not in VALID_GOAL_STATUSES:
-                    raise ValueError(f"Invalid status: {new_status}")
-                if new_status == "active" and old_status != "active":
-                    other_items = [it for j, it in enumerate(items) if j != idx]
-                    if _active_count_for_owner(other_items, cur["owner"]) >= MAX_ACTIVE_GOALS:
-                        raise ValueError(
-                            f"Maximum of {MAX_ACTIVE_GOALS} active Focus Goals reached. "
-                            "Graduate or archive an active goal first."
-                        )
-                    cur["graduated_at"] = None
-                elif new_status == "graduated" and old_status != "graduated":
-                    cur["graduated_at"] = now_iso
-                cur["status"] = new_status
+    for field in ("description", "matchup_char", "tags", "source_insight_id", "trend_hint", "owner", "items", "kind", "shareable"):
+        if field in patch:
+            pl_patch[field] = patch[field]
 
-            cur["updated_at"] = now_iso
-            items[idx] = cur
-            updated = dict(cur)
-            break
+    if "is_focus" in patch:
+        pl_patch["is_focus"] = patch["is_focus"]
 
-        if updated is not None:
-            _write_jsonl_atomic(path, items)
-    return updated
+    if "status" in patch or "focus_status" in patch:
+        raw_st = patch["status"] if "status" in patch else patch["focus_status"]
+        if raw_st is None or str(raw_st).strip() == "":
+            pl_patch["is_focus"] = False
+            pl_patch["focus_status"] = None
+        else:
+            st = str(raw_st).strip().lower()
+            if st not in VALID_GOAL_STATUSES:
+                raise ValueError(f"Invalid status: {st}")
+            if st == "archived":
+                pl_patch["is_focus"] = False
+                pl_patch["focus_status"] = None
+            else:
+                pl_patch["is_focus"] = True
+                pl_patch["focus_status"] = st
+
+    updated = update_playlist(goal_id, pl_patch, data_dir=data_dir)
+    if updated is None:
+        return None
+    return _playlist_to_goal_view(updated)
 
 
 def delete_focus_goal(goal_id: str, *, data_dir: Path = DEFAULT_DATA_DIR) -> bool:
-    if not _GOAL_ID_RE.match(str(goal_id or "")):
-        raise ValueError("Invalid focus goal id")
-    with _GOALS_LOCK:
-        path = focus_goals_jsonl_path(data_dir)
-        items = _read_jsonl(path)
-        kept = [it for it in items if str(it.get("id")) != str(goal_id)]
-        if len(kept) == len(items):
-            return False
-        _write_jsonl_atomic(path, kept)
-    return True
+    return delete_playlist(goal_id, data_dir=data_dir)
 
 
 def clear_playlist_reference(playlist_id: str, *, data_dir: Path = DEFAULT_DATA_DIR) -> int:
-    """Clear dangling `playlist_id` references on Focus Goals when a playlist is deleted."""
-    pid = str(playlist_id or "").strip()
-    if not pid:
-        return 0
-    cleared = 0
-    now_iso = datetime.now().isoformat(timespec="seconds")
-    with _GOALS_LOCK:
-        path = focus_goals_jsonl_path(data_dir)
-        items = _read_jsonl(path)
-        for it in items:
-            if str(it.get("playlist_id") or "") == pid:
-                it["playlist_id"] = None
-                it["updated_at"] = now_iso
-                cleared += 1
-        if cleared:
-            _write_jsonl_atomic(path, items)
-    return cleared
+    """No-op compatibility stub (Focus Goals are unified directly into Playlists)."""
+    return 0

@@ -32,7 +32,7 @@ function toggleLegacyInsights() {
 
 async function triggerMatchBreakdown(qid, perspective = 1) {
   if (!isProCorpusEnabled()) {
-    return toast("Pro Corpus comparison is on the roadmap.");
+    return toast("Top-Rank comparison is on the roadmap.");
   }
   try {
     const res = await api("/api/insights/run", {
@@ -55,7 +55,7 @@ async function triggerMatchBreakdownFromPicker() {
 
 async function triggerVerifiedHabitsRun() {
   if (!isProCorpusEnabled()) {
-    return toast("Pro Corpus comparison is on the roadmap.");
+    return toast("Top-Rank comparison is on the roadmap.");
   }
   try {
     const res = await api("/api/insights/run", {
@@ -69,18 +69,37 @@ async function triggerVerifiedHabitsRun() {
   }
 }
 
-function pinHabitAsFocusGoal(habitIdx) {
+async function pinHabitAsFocusGoal(habitIdx, btnEl = null) {
   const lv = state.insightsData && state.insightsData.latest_verified_habits;
   if (!lv || !lv.habits || !lv.habits[habitIdx]) return;
+  if (getActiveFocuses().length >= 3) {
+    toast("Max 3 Active Focuses — graduate or unpin one first.");
+    return;
+  }
   const h = lv.habits[habitIdx];
-  openGoalModal(null, {
-    title: `Fix: ${h.label}`,
-    description: h.summary || `Recurring leak across ${h.sets_affected}/${h.total_sets} sets (-${h.total_hp_lost} HP total).`,
-    tags: [h.label],
-    trend_hint: "From AI Checkup",
-    source_insight_id: h.source_insight_id,
-    seed_moments: h.seed_moments || [],
-  });
+  const seedMoments = Array.isArray(h.seed_moments) ? h.seed_moments : [];
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Pinning..."; }
+  try {
+    const res = await api("/api/focus-goals", {
+      method: "POST",
+      body: JSON.stringify({
+        owner: state.username || DEFAULT_USER,
+        title: `Fix: ${h.label}`,
+        description: h.summary || `Recurring leak across ${h.sets_affected}/${h.total_sets} sets (-${h.total_hp_lost} HP total).`,
+        tags: [h.label],
+        trend_hint: "From AI Checkup",
+        source_insight_id: h.source_insight_id || `${lv.id}:${habitIdx}`,
+        items: seedMoments,
+      }),
+    });
+    const cnt = Number((res.goal && res.goal.item_count) ?? seedMoments.length);
+    toast(`Pinned Active Focus "${res.goal.title}" with ${cnt} clip${cnt === 1 ? "" : "s"} ready to Watch & Train!`);
+    if (btnEl) btnEl.textContent = "✓ Pinned";
+    await Promise.all([loadPlaylists(false), loadFocusGoals()]);
+  } catch (err) {
+    toast(err.message);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = "+ Pin as Focus Goal"; }
+  }
 }
 
 function renderInsights() {
@@ -98,7 +117,7 @@ function renderInsights() {
 
   const telemMatches = (state.matches || []).filter(m => m.has_telemetry).slice(0, 20);
   const pickerOpts = telemMatches.map(m =>
-    `<option value="${esc(m.quark_id)}|${m.perspective || 1}">${esc(m.date_str || m.quark_id)} · vs ${esc(m.opp_player_name)} (${esc(m.self_char_name || "?")} vs ${esc(m.opp_char_name || "?")})</option>`
+    `<option value="${esc(m.quark_id)}|${m.perspective || 1}">${esc(m.date_str || m.quark_id)} · ${esc(formatMatchLabelText(m, { defaultSelfName: state.username, showRank: false }))}</option>`
   ).join("");
 
   const activeInsightJobs = (state.jobs || []).filter(j => j.source === "insights" && ["queued", "running", "paused"].includes(j.state));
@@ -123,12 +142,12 @@ function renderInsights() {
           <span class="pill err">-${h.total_hp_lost} HP</span>
         </div>
         <div style="font-size:12.5px; color:var(--muted);">
-          ${h.verified_clips} visually verified clip${h.verified_clips === 1 ? "" : "s"} across ${h.sets_affected}/${h.total_sets} sets · ${h.verified_pro_count} verified pro solution${h.verified_pro_count === 1 ? "" : "s"}
+          ${h.verified_clips} visually verified clip${h.verified_clips === 1 ? "" : "s"} across ${h.sets_affected}/${h.total_sets} sets · ${h.verified_pro_count} verified top-rank solution${h.verified_pro_count === 1 ? "" : "s"}
         </div>
         ${h.summary ? `<div style="font-size:13px; color:var(--text-body);">${esc(h.summary)}</div>` : ""}
         <div class="row-between" style="margin-top:auto; padding-top:6px;">
-          <a href="${esc(h.report_href)}" style="font-size:12px; font-weight:700;" onclick="event.preventDefault(); openReport('${esc(h.report_id || lv.id)}', 'insights');">Open Report Clips →</a>
-          <button class="sm emerald" onclick="pinHabitAsFocusGoal(${idx})">+ Pin as Focus Goal</button>
+          <a href="${esc(safeHref(h.report_href))}" style="font-size:12px; font-weight:700;" onclick="event.preventDefault(); openReport(${escJsAttr(h.report_id || lv.id)}, 'insights');">Open Report Clips →</a>
+          <button class="sm emerald" onclick="pinHabitAsFocusGoal(${idx}, this)">+ Pin as Focus Goal</button>
         </div>
       </div>
     `).join("");
@@ -143,7 +162,7 @@ function renderInsights() {
             </div>
             <div style="font-size:12.5px; color:var(--muted); margin-top:2px;">${esc(lv.matchup)} · ${esc(lv.summary)}</div>
           </div>
-          <button type="button" class="sm primary" onclick="openReport('${esc(lv.id)}', 'insights')">Open Full Report →</button>
+          <button type="button" class="sm primary" onclick="openReport(${escJsAttr(lv.id)}, 'insights')">Open Full Report →</button>
         </div>
         <div class="habits-grid">${cards}</div>
       </div>
@@ -172,7 +191,7 @@ function renderInsights() {
             <td class="mono" style="white-space:nowrap; font-size:12.5px; color:var(--muted);">${esc(r.date)}</td>
             <td><span class="pill ${badgeCls}">${esc(r.type_label)}</span></td>
             <td>
-              <a href="${esc(r.href)}" style="font-weight:700;" onclick="event.preventDefault(); openReport('${esc(r.id)}', 'insights');">${esc(r.matchup)}</a>
+              <a href="${esc(safeHref(r.href))}" style="font-weight:700;" onclick="event.preventDefault(); openReport(${escJsAttr(r.id)}, 'insights');">${esc(r.matchup)}</a>
               <div class="mono" style="font-size:11px; color:var(--muted-dim);">${esc(r.id)}</div>
             </td>
             <td style="font-size:13px; color:var(--text-soft);">${esc(r.summary)}</td>
@@ -186,9 +205,9 @@ function renderInsights() {
     <div class="card">
       <div class="row-between" style="gap:12px;">
         <div>
-          <strong style="font-size:16px;">AI &amp; Pro Corpus Insights</strong>
+          <strong style="font-size:16px;">AI &amp; Top-Rank Insights</strong>
           <div style="font-size:12.5px; color:var(--muted);">
-            Run Hybrid VLM + RAM checkups without PowerShell · Pro corpus: ${caps.pro_corpus_sets || 0} sets · Gemini Vision: ${caps.has_gemini ? "Ready" : "Not configured"}
+            Run Hybrid VLM + RAM checkups without PowerShell · Top-Rank corpus: ${caps.pro_corpus_sets || 0} sets · Gemini Vision: ${caps.has_gemini ? "Ready" : "Not configured"}
           </div>
         </div>
         <div class="row" style="gap:8px;">

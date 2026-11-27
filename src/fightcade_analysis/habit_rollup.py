@@ -643,20 +643,20 @@ def render_habit_rollup_html(rollup: dict[str, Any]) -> str:
                     pro_cmd = (
                         f".\\scripts\\takeover.ps1 -QuarkId {pr['quark_id']} "
                         f"-Frame {pr['game_frame']} -Player {pr['perspective']} "
-                        f"-Label \"Pro {pr['action_coarse']}\""
+                        f"-Label \"Top-Rank {pr['action_coarse']}\""
                     )
                     vid_panes.append(
                         f"""
                         <div class="vid-pane">
                           <div class="vid-cap">
-                            <span class="pill-pro">PRO ANSWER ({pr['similarity_pct']}% match)</span>
+                            <span class="pill-pro">TOP-RANK ANSWER ({pr['similarity_pct']}% match)</span>
                             <code>{html.escape(pr['action_coarse'])}</code> (EV {pr['outcome_value']:+.2f})
                             <button class="play-btn" onclick="togglePlay('{pvid_id}', this)">Play</button>
                           </div>
                           <video id="{pvid_id}" controls playsinline preload="metadata" src="{html.escape(str(pro_clip))}"></video>
                           <div class="vid-foot">
                             <span class="muted">{html.escape(pr['self_char_name'])} vs {html.escape(pr['opp_char_name'])} · R{pr['round_id']} gf{pr['game_frame']}</span>
-                            {render_takeover_buttons_html(str(pr['quark_id']), int(pr['game_frame']), int(pr['perspective']), f"Pro {pr['action_coarse']}", pro_cmd, is_pro=True)}
+                            {render_takeover_buttons_html(str(pr['quark_id']), int(pr['game_frame']), int(pr['perspective']), f"Top-Rank {pr['action_coarse']}", pro_cmd, is_pro=True)}
                           </div>
                         </div>
                         """
@@ -684,7 +684,7 @@ def render_habit_rollup_html(rollup: dict[str, Any]) -> str:
                     <tr>
                       <td class="mono">{html.escape(ex['match_date'])}</td>
                       <td>{link_html} <span class="muted">R{ex['round_id']} gf{ex['game_frame']}</span></td>
-                      <td><code>{html.escape(ex['user_action'])}</code> → pro <code>{html.escape(ex['best_alt_action'])}</code></td>
+                      <td><code>{html.escape(ex['user_action'])}</code> → top-rank <code>{html.escape(ex['best_alt_action'])}</code></td>
                       <td class="neg">+{ex['regret']:.2f}</td>
                       <td>{render_takeover_buttons_html(str(ex['quark_id']), int(ex['game_frame']), int(ex['perspective']), str(ex['interaction']), cmd, is_pro=False)}</td>
                     </tr>
@@ -695,7 +695,7 @@ def render_habit_rollup_html(rollup: dict[str, Any]) -> str:
             f"""
             <div class="table-wrap">
               <table class="mini-tbl">
-                <thead><tr><th>Date</th><th>Match &amp; Frame</th><th>You → Pro</th><th>Regret</th><th>Drill</th></tr></thead>
+                <thead><tr><th>Date</th><th>Match &amp; Frame</th><th>You → Top-Rank</th><th>Regret</th><th>Drill</th></tr></thead>
                 <tbody>{''.join(ex_rows)}</tbody>
               </table>
             </div>
@@ -722,12 +722,12 @@ def render_habit_rollup_html(rollup: dict[str, Any]) -> str:
               <div class="habit-stats">
                 <span><strong>{h['occurrences']}</strong> leaks across <strong>{h['sets_affected']}/{h['total_sets']}</strong> sets ({h['set_spread_pct']}%)</span>
                 <span>Avg Regret: <strong>{h['avg_regret']:+.2f}</strong></span>
-                <span>You: <strong>{h['avg_actual_value']:+.2f}</strong> vs Pro EV: <strong>{h['avg_corpus_ev']:+.2f}</strong></span>
+                <span>You: <strong>{h['avg_actual_value']:+.2f}</strong> vs Top-Rank EV: <strong>{h['avg_corpus_ev']:+.2f}</strong></span>
                 <span>Avg HP Swing: <strong class="neg">{h['avg_hp_swing']*100:+.0f}%</strong></span>
               </div>
               <div class="habit-actions">
                 <div><strong>Your common choice:</strong> {user_acts}</div>
-                <div><strong>Top pro answer:</strong> {pro_alts}</div>
+                <div><strong>Top-rank answer:</strong> {pro_alts}</div>
                 <div><strong>Opponents:</strong> {opps_str}</div>
               </div>
               <details id="habit-details-{idx}"{open_attr}>
@@ -862,7 +862,7 @@ def render_habit_rollup_html(rollup: dict[str, Any]) -> str:
   <a class="back-link" href="/#insights">&larr; Fightcade Lab Insights</a>
   <header>
     <h1>{uname} ({pchar}) — Multi-Set Habit &amp; Leak Rollup</h1>
-    <div class="sub">Aggregated across {num_sets} personal sets ({tot_rounds} rounds) against {corpus_sz:,} pro reference decision points</div>
+    <div class="sub">Aggregated across {num_sets} personal sets ({tot_rounds} rounds) against {corpus_sz:,} top-rank reference decision points</div>
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-val">{num_sets}</div><div class="kpi-lbl">Sets Analyzed</div></div>
       <div class="kpi"><div class="kpi-val">{tot_rounds}</div><div class="kpi-lbl">Total Rounds</div></div>

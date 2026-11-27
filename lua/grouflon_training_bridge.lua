@@ -23,6 +23,9 @@ local M = {
   settings_path = "",
   _menu = nil,
   _callbacks = nil,
+  _notes_scroll = 0,
+  _notes_tab_idx = 5,
+  _notes_visible_lines = 13,
   _prev_menu_keys = {},
   _hold_timers = {},
   _dummy_state = {
@@ -67,7 +70,7 @@ M.settings = {
 
   -- Takeover Start & Loop Countdown UX (persisted)
   start_paused = true, -- Open takeover paused until any button is pressed
-  loop_delay_sec = 2,  -- Disappearing-dot countdown seconds (0..10) before each loop start
+  loop_delay_sec = 2,  -- Sub-second countdown seconds (0..10) before each loop start
 }
 
 local POSE_LABELS = { "Standing", "Crouching", "Jumping", "Walk Back" }
@@ -185,6 +188,174 @@ function M.init(custom_dir, settings_path, callbacks)
   return true
 end
 
+local function _wrap_note_lines(text, max_chars)
+  local lines = {}
+  if not text or text == "" then return lines end
+  max_chars = max_chars or 76
+  local norm = string.gsub(tostring(text), "\r\n", "\n")
+  norm = string.gsub(norm, "\r", "\n")
+  local start_pos = 1
+  while true do
+    local nl = string.find(norm, "\n", start_pos, true)
+    local para
+    if nl then
+      para = string.sub(norm, start_pos, nl - 1)
+    else
+      para = string.sub(norm, start_pos)
+    end
+    para = string.gsub(para, "%s+$", "")
+    if para == "" then
+      lines[#lines + 1] = ""
+    else
+      local cur = ""
+      local pos = 1
+      local plen = #para
+      while pos <= plen do
+        if cur ~= "" then
+          local _, sp_end = string.find(para, "^%s+", pos)
+          if sp_end then pos = sp_end + 1 end
+          if pos > plen then break end
+        end
+        local ws, we = string.find(para, "%S+", pos)
+        if not ws then break end
+        local leading = (cur == "") and string.sub(para, pos, ws - 1) or ""
+        local word = string.sub(para, ws, we)
+        local piece = leading .. word
+        pos = we + 1
+        if cur == "" then
+          if #piece <= max_chars then
+            cur = piece
+          else
+            local rem = piece
+            while #rem > max_chars do
+              lines[#lines + 1] = string.sub(rem, 1, max_chars)
+              rem = string.sub(rem, max_chars + 1)
+            end
+            cur = rem
+          end
+        else
+          if (#cur + 1 + #word) <= max_chars then
+            cur = cur .. " " .. word
+          else
+            lines[#lines + 1] = cur
+            if #word <= max_chars then
+              cur = word
+            else
+              local rem = word
+              while #rem > max_chars do
+                lines[#lines + 1] = string.sub(rem, 1, max_chars)
+                rem = string.sub(rem, max_chars + 1)
+              end
+              cur = rem
+            end
+          end
+        end
+      end
+      if cur ~= "" then
+        lines[#lines + 1] = cur
+      end
+    end
+    if not nl then break end
+    start_pos = nl + 1
+  end
+  while #lines > 0 and lines[1] == "" do table.remove(lines, 1) end
+  while #lines > 0 and lines[#lines] == "" do table.remove(lines, #lines) end
+  return lines
+end
+
+function M._get_note_lines()
+  local cb = M._callbacks
+  local raw = ""
+  if cb and type(cb.get_drill_note) == "function" then
+    local ok, val = pcall(cb.get_drill_note)
+    if ok and type(val) == "string" then
+      raw = val
+    end
+  end
+  return _wrap_note_lines(raw, 76)
+end
+
+local function _make_notes_viewer_item()
+  local item = {}
+  function item:draw(_x, _y, _selected)
+    local lines = M._get_note_lines()
+    local vis = M._notes_visible_lines or 13
+    local menu_bottom = (M._menu and M._menu.bottom) or 196
+    if #lines == 0 then
+      gui.text(_x, _y + 4, "No note attached to this drill.", 0x94A3B8FF, text_default_border_color)
+      gui.text(_x, menu_bottom - 12, "Left/Right: Switch Tab   LK/Start: Close", text_disabled_color, text_default_border_color)
+      return
+    end
+    local max_scroll = math.max(0, #lines - vis)
+    if M._notes_scroll < 0 then M._notes_scroll = 0 end
+    if M._notes_scroll > max_scroll then M._notes_scroll = max_scroll end
+    local count = math.min(vis, #lines - M._notes_scroll)
+    for i = 1, count do
+      local ln = lines[M._notes_scroll + i]
+      if ln and ln ~= "" then
+        gui.text(_x, _y + (i - 1) * 10, ln, text_default_color, text_default_border_color)
+      end
+    end
+    if max_scroll > 0 then
+      local first_ln = M._notes_scroll + 1
+      local last_ln = math.min(#lines, M._notes_scroll + vis)
+      local hint = string.format("Up/Down: Scroll (%d-%d/%d)   Left/Right: Tabs   LK/Start: Close", first_ln, last_ln, #lines)
+      gui.text(_x, menu_bottom - 12, hint, 0x38BDF8FF, text_default_border_color)
+    else
+      gui.text(_x, menu_bottom - 12, "Left/Right: Switch Tab   LK/Start: Close", text_disabled_color, text_default_border_color)
+    end
+  end
+  function item:legend()
+    local lines = M._get_note_lines()
+    local vis = M._notes_visible_lines or 13
+    if #lines > vis then
+      return "Up/Down: Scroll"
+    end
+    return "Left/Right: Switch Tab"
+  end
+  return item
+end
+
+local function _make_dynamic_button_item(label_fn, validate_fn, enabled_fn, legend_fn)
+  local item = { last_frame_validated = 0 }
+  function item:draw(_x, _y, _selected)
+    local enabled = (enabled_fn == nil) or enabled_fn()
+    local c = enabled and text_default_color or text_disabled_color
+    if _selected then
+      c = enabled and text_selected_color or 0xB45309FF
+      if self.last_frame_validated > frame_number then
+        self.last_frame_validated = 0
+      end
+      if (frame_number - self.last_frame_validated) < 5 then
+        c = 0xFFFF00FF
+      end
+    end
+    local txt = label_fn and label_fn() or ""
+    gui.text(_x, _y, txt, c, text_default_border_color)
+  end
+  function item:validate()
+    if enabled_fn and not enabled_fn() then
+      return
+    end
+    self.last_frame_validated = frame_number
+    if validate_fn then
+      validate_fn()
+    end
+  end
+  function item:legend()
+    if legend_fn then
+      return legend_fn()
+    end
+    if enabled_fn and not enabled_fn() then
+      return "Play an attempt (>= 0.25s), then press any button to save"
+    end
+    return "Any Button: Save attempt to Fightcade Lab"
+  end
+  item._is_action_button = true
+  item._is_enabled = enabled_fn
+  return item
+end
+
 function M._build_menu()
   local cb = M._callbacks or {}
   local mode_proxy = {
@@ -238,10 +409,107 @@ function M._build_menu()
     end
   end
 
+  local function _get_rep_info()
+    if cb and type(cb.get_rep_export_info) == "function" then
+      local ok, info = pcall(cb.get_rep_export_info)
+      if ok and type(info) == "table" then
+        return info
+      end
+    end
+    return nil
+  end
+
+  local function _fmt_rep_meta(frames, opp_delta, is_saved)
+    local parts = string.format("%.1fs", frames / 60.0)
+    if (tonumber(opp_delta) or 0) < 0 then
+      parts = parts .. string.format(", %d HP", tonumber(opp_delta))
+    end
+    local suffix = is_saved and " [SAVED]" or ""
+    return "(" .. parts .. ")" .. suffix
+  end
+
+  local function _fmt_latest_label()
+    local info = _get_rep_info()
+    if info and info.can_export then
+      local cf = tonumber(info.current_frames) or 0
+      local lf = tonumber(info.last_frames) or 0
+      if cf >= 15 then
+        return "Save Attempt to Lab " .. _fmt_rep_meta(cf, info.current_opp_delta, info.current_saved)
+      elseif lf >= 15 then
+        return "Save Attempt to Lab " .. _fmt_rep_meta(lf, info.last_opp_delta, info.last_saved)
+      end
+    end
+    return "Save Attempt to Lab (play a rep)"
+  end
+
+  local function _latest_ready()
+    local info = _get_rep_info()
+    if not info or not info.can_export then return false end
+    return ((tonumber(info.current_frames) or 0) >= 15) or ((tonumber(info.last_frames) or 0) >= 15)
+  end
+
+  local function _latest_legend()
+    local info = _get_rep_info()
+    if not info or not info.can_export then
+      return "Launch Takeover from Fightcade Lab to export attempts"
+    end
+    local cf = tonumber(info.current_frames) or 0
+    local lf = tonumber(info.last_frames) or 0
+    if cf >= 15 then
+      return "Any Button: Save the attempt you just played to Lab"
+    elseif lf >= 15 then
+      return "Any Button: Save the attempt from just before reset"
+    end
+    return "Play an attempt (>= 0.25s), then press any button"
+  end
+
+  local function _prior_ready()
+    local info = _get_rep_info()
+    if not info or not info.can_export then return false end
+    return ((tonumber(info.current_frames) or 0) >= 15) and ((tonumber(info.last_frames) or 0) >= 15)
+  end
+
+  local function _fmt_prior_label()
+    local info = _get_rep_info()
+    if info and info.can_export and ((tonumber(info.current_frames) or 0) >= 15) and ((tonumber(info.last_frames) or 0) >= 15) then
+      return "Save Prior Attempt " .. _fmt_rep_meta(tonumber(info.last_frames) or 0, info.last_opp_delta, info.last_saved)
+    end
+    return "Save Prior Attempt (none)"
+  end
+
+  local function _prior_legend()
+    if _prior_ready() then
+      return "Any Button: Save earlier attempt (before last reset)"
+    end
+    return "Only needed if you already started a new attempt after reset"
+  end
+
   local tabs = {
     {
       name = "Mode",
       entries = {
+        _make_dynamic_button_item(
+          _fmt_latest_label,
+          function()
+            if cb and type(cb.save_rep) == "function" then
+              local ok, saved = pcall(cb.save_rep, "latest")
+              if ok and saved then M.close_menu() end
+            end
+          end,
+          _latest_ready,
+          _latest_legend
+        ),
+        _make_dynamic_button_item(
+          _fmt_prior_label,
+          function()
+            if cb and type(cb.save_rep) == "function" then
+              local ok, saved = pcall(cb.save_rep, "prior")
+              if ok and saved then M.close_menu() end
+            end
+          end,
+          _prior_ready,
+          _prior_legend
+        ),
         list_menu_item("Active Mode", mode_proxy, "mode_idx", { "Takeover", "Sandbox Training" }),
         list_menu_item("Game Speed (Alt+6/7/8)", mode_proxy, "speed_idx", { "25%", "50%", "65%", "75%", "85%", "100%", "125%" }),
         list_menu_item("Slow-Mo Scope", M.settings, "speed_scope", { "Whole Drill", "Takeover Only" }),
@@ -291,14 +559,22 @@ function M._build_menu()
         checkbox_menu_item("Infinite SA Time (Sandbox)", M.settings, "infinite_sa_time"),
       },
     },
+    {
+      name = "Notes",
+      entries = {
+        _make_notes_viewer_item(),
+      },
+    },
   }
 
+  M._notes_tab_idx = #tabs
   M._menu = make_multitab_menu(23, 18, 360, 196, tabs, on_menu_change)
 end
 
 function M.open_menu()
   if not M.loaded or not M._menu then return end
   if M._sync_mode_proxy then M._sync_mode_proxy() end
+  M._notes_scroll = 0
   M.menu_open = true
   menu_stack_clear()
   menu_stack_push(M._menu)
@@ -359,19 +635,64 @@ function M.update_menu(live)
   -- Always freeze emulation cleanly while the training menu is open
   pcall(write_game_vars, { freeze = true })
 
+  local lp_hit = _menu_edge_or_repeat(live, "P1 Weak Punch", 0)
+  local mp_hit = _menu_edge_or_repeat(live, "P1 Medium Punch", 0)
+  local hp_hit = _menu_edge_or_repeat(live, "P1 Strong Punch", 0)
+  local lk_hit = _menu_edge_or_repeat(live, "P1 Weak Kick", 0)
+  local mk_hit = _menu_edge_or_repeat(live, "P1 Medium Kick", 0)
+  local hk_hit = _menu_edge_or_repeat(live, "P1 Strong Kick", 0)
+
+  local top_menu = menu_stack_top()
+  local cur_entry = (top_menu == M._menu and not M._menu.is_main_menu_selected)
+    and M._menu:current_entry()
+    or nil
+  local on_enabled_action = false
+  if cur_entry and cur_entry.validate ~= nil and cur_entry.left == nil and cur_entry.right == nil then
+    on_enabled_action = (cur_entry._is_enabled == nil) or cur_entry._is_enabled()
+  end
+
+  local any_attack = lp_hit or mp_hit or hp_hit or lk_hit or mk_hit or hk_hit
+  local confirm_btn = lp_hit or hp_hit or mk_hit or hk_hit
+
   local m_inp = {
     up       = _menu_edge_or_repeat(live, "P1 Up", 5),
     down     = _menu_edge_or_repeat(live, "P1 Down", 5),
     left     = _menu_edge_or_repeat(live, "P1 Left", 5),
     right    = _menu_edge_or_repeat(live, "P1 Right", 5),
-    validate = _menu_edge_or_repeat(live, "P1 Weak Punch", 0),
-    reset    = _menu_edge_or_repeat(live, "P1 Medium Punch", 0),
-    cancel   = _menu_edge_or_repeat(live, "P1 Weak Kick", 0),
+    validate = on_enabled_action and any_attack or confirm_btn,
+    reset    = (not on_enabled_action) and mp_hit or false,
+    cancel   = (not on_enabled_action) and lk_hit or false,
   }
-  if m_inp.cancel and menu_stack_top() == M._menu then
+  -- Allow any confirm button (LP/HP/MK/HK) to also toggle/step setting items (checkboxes/lists/integers)
+  if cur_entry and cur_entry.right ~= nil and cur_entry.validate == nil and confirm_btn then
+    m_inp.right = true
+  end
+
+  if m_inp.cancel and top_menu == M._menu then
     M.close_menu()
     return
   end
+
+  -- Dedicated Notes tab: Up/Down scroll full note, Left/Right always switch tabs cleanly
+  if menu_stack_top() == M._menu and M._menu.main_menu_selected_index == M._notes_tab_idx then
+    M._menu.is_main_menu_selected = true
+    if m_inp.up or m_inp.down then
+      local lines = M._get_note_lines()
+      local vis = M._notes_visible_lines or 13
+      local max_scroll = math.max(0, #lines - vis)
+      if m_inp.up and M._notes_scroll > 0 then
+        M._notes_scroll = M._notes_scroll - 1
+      elseif m_inp.down and M._notes_scroll < max_scroll then
+        M._notes_scroll = M._notes_scroll + 1
+      end
+      m_inp.up = false
+      m_inp.down = false
+    end
+    if m_inp.left or m_inp.right then
+      M._notes_scroll = 0
+    end
+  end
+
   pcall(menu_stack_update, m_inp)
 end
 

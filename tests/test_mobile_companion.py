@@ -83,10 +83,69 @@ def test_extract_round_timeline_markers_and_hp_curve() -> None:
     assert "dmg_opp" in types
     assert "super" in types
     assert "kd_opp" in types
-    assert "select_mark" in types
+    assert "select_mark" not in types
     assert len(res["hp_curve"]) >= 10
     assert res["hp_curve"][0][0] == 0
     assert res["hp_curve"][0][1] == 1.0
+
+    # Exact frame alignment: P1 takes 40 dmg at offset 60 (gf 2060), HP curve must hold 1.0 through 59 and drop at 60
+    dmg_self = [m for m in res["markers"] if m["type"] == "dmg_self"]
+    assert len(dmg_self) == 1
+    assert dmg_self[0]["gf"] == 2060
+    assert dmg_self[0]["offset_f"] == 60
+    curve_by_off = {pt[0]: (pt[1], pt[2]) for pt in res["hp_curve"]}
+    assert curve_by_off[59][0] == 1.0
+    assert curve_by_off[60][0] == 0.75
+
+
+def test_hp_timeline_does_not_anchor_damage_on_leading_chip_and_rebases_with_start_override() -> None:
+    """Regression: isolated 1-2 HP blocked chip before a combo must not pull the dmg tick early,
+    and `start_gf_override` must anchor BOTH markers and hp_curve to the same video start frame.
+    """
+    n_frames = 300
+    start_gf = 5000
+    p1_hp = [160] * n_frames
+    p2_hp = [160] * n_frames
+    # P2 blocks 1 HP chip at +50 and +80, then gets hit for a 30 HP combo at +113 and +125
+    for i in range(50, n_frames):
+        p2_hp[i] -= 1
+    for i in range(80, n_frames):
+        p2_hp[i] -= 1
+    for i in range(113, n_frames):
+        p2_hp[i] -= 14
+    for i in range(125, n_frames):
+        p2_hp[i] -= 16
+
+    df = pd.DataFrame(
+        {
+            "game_frame": list(range(start_gf, start_gf + n_frames)),
+            "round_id": [1] * n_frames,
+            "p1_char": [14] * n_frames,
+            "p2_char": [4] * n_frames,
+            "p1_hp": p1_hp,
+            "p2_hp": p2_hp,
+            "p1_superfreeze": [0] * n_frames,
+            "p2_superfreeze": [0] * n_frames,
+            "p1_posture": [0] * n_frames,
+            "p2_posture": [0] * n_frames,
+            "p1_input_mask": [0] * n_frames,
+            "p2_input_mask": [0] * n_frames,
+        }
+    )
+
+    res = extract_round_timeline_markers(df, perspective=1, start_gf_override=5010)
+    dmg_opp = [m for m in res["markers"] if m["type"] == "dmg_opp"]
+    assert len(dmg_opp) == 1
+    # Anchored at the real hit (gf 5113 -> offset 103 relative to 5010), NOT the blocked chip at 5050!
+    assert dmg_opp[0]["gf"] == 5113
+    assert dmg_opp[0]["offset_f"] == 103
+    assert dmg_opp[0]["value"] == 30
+
+    # hp_curve is rebased identically to start_gf_override=5010 and has exact pre/post vertices at 102 -> 103
+    curve_by_off = {pt[0]: pt[2] for pt in res["hp_curve"]}
+    assert res["hp_curve"][0][0] == 0
+    assert curve_by_off[102] == round(158 / 160, 3)
+    assert curve_by_off[103] == round(144 / 160, 3)
 
 
 def test_group_rounds_into_matches_ft2_gap_and_char_switch() -> None:
@@ -351,6 +410,39 @@ def test_annotations_crud_and_drill_queue_sync(tmp_path: Path) -> None:
     assert q[0]["savestate_ready"] is True
     assert "Anti-Air" in q[0]["note"]
 
+    # Updating start_gf / end_gf on a queued_drill annotation re-bakes and syncs queue.jsonl bounds
+    baked_before = len(baked_calls)
+    ranged = update_annotation(
+        ann["id"],
+        {"start_gf": 15380, "end_gf": 15560},
+        data_dir=tmp_path,
+        bake_fn=fake_bake,
+        async_bake=False,
+    )
+    assert ranged is not None
+    assert ranged["start_gf"] == 15380
+    assert ranged["end_gf"] == 15560
+    assert ranged["is_range"] is True
+    assert ranged["drill_status"] == "ready"
+    assert len(baked_calls) == baked_before + 1
+    assert baked_calls[-1][1:3] == (15380, 15560)
+    q_after_range = load_queue(tmp_path)
+    assert len(q_after_range) == 1
+    assert q_after_range[0]["start_gf"] == 15380
+    assert q_after_range[0]["end_gf"] == 15560
+
+    # Validation: end_gf must be strictly greater than start_gf, positive ints only
+    with pytest.raises(ValueError, match="end_gf must be greater than start_gf"):
+        update_annotation(ann["id"], {"start_gf": 15600, "end_gf": 15500}, data_dir=tmp_path, bake_fn=fake_bake, async_bake=False)
+    with pytest.raises(ValueError, match="end_gf must be greater than start_gf"):
+        update_annotation(ann["id"], {"start_gf": 15560, "end_gf": 15560}, data_dir=tmp_path, bake_fn=fake_bake, async_bake=False)
+    with pytest.raises(ValueError, match="end_gf must be greater than start_gf"):
+        update_annotation(ann["id"], {"start_gf": 15600}, data_dir=tmp_path, bake_fn=fake_bake, async_bake=False)
+    with pytest.raises(ValueError, match="positive integers"):
+        update_annotation(ann["id"], {"start_gf": 0, "end_gf": 15560}, data_dir=tmp_path, bake_fn=fake_bake, async_bake=False)
+    with pytest.raises(ValueError, match="integers"):
+        update_annotation(ann["id"], {"start_gf": "bad", "end_gf": 15560}, data_dir=tmp_path, bake_fn=fake_bake, async_bake=False)
+
     # Unqueue drill via update_annotation -> dismissed from queue
     patched = update_annotation(
         ann["id"],
@@ -363,6 +455,49 @@ def test_annotations_crud_and_drill_queue_sync(tmp_path: Path) -> None:
     assert patched["note"] == "Updated note"
     assert patched["queued_drill"] is False
     assert load_queue(tmp_path) == []
+
+    # Updating range when queued_drill is False invalidates any stale `.fs`/`.inputs` without re-baking
+    stale_fs = tmp_path / "selections" / f"{ann['id']}.fs"
+    stale_inp = tmp_path / "selections" / f"{ann['id']}.inputs"
+    assert stale_fs.exists() and stale_inp.exists()
+    baked_count_non_drill = len(baked_calls)
+    ranged_non_drill = update_annotation(
+        ann["id"],
+        {"start_gf": 15350, "end_gf": 15520},
+        data_dir=tmp_path,
+        bake_fn=fake_bake,
+        async_bake=False,
+    )
+    assert ranged_non_drill is not None
+    assert ranged_non_drill["start_gf"] == 15350
+    assert ranged_non_drill["end_gf"] == 15520
+    assert ranged_non_drill["savestate"] is None
+    assert ranged_non_drill["inputs"] is None
+    assert ranged_non_drill["drill_status"] == "none"
+    assert not stale_fs.exists()
+    assert not stale_inp.exists()
+    assert len(baked_calls) == baked_count_non_drill
+
+    # Default lazy-bake behavior: creating a Moment without queued_drill does not bake upfront
+    lazy_ann = create_annotation(
+        {
+            "quark_id": qid,
+            "round_id": 1,
+            "anchor_gf": 15600,
+            "start_gf": 15480,
+            "end_gf": 15690,
+            "kind": "note",
+            "note": "Lazy-bake default check",
+        },
+        data_dir=tmp_path,
+        bake_fn=fake_bake,
+        async_bake=False,
+    )
+    assert lazy_ann["queued_drill"] is False
+    assert lazy_ann["drill_status"] == "none"
+    assert len(baked_calls) == baked_count_non_drill
+    assert load_queue(tmp_path) == []
+    assert delete_annotation(lazy_ann["id"], data_dir=tmp_path) is True
 
     # Delete annotation
     assert delete_annotation(ann["id"], data_dir=tmp_path) is True
@@ -526,17 +661,33 @@ def test_mobile_http_endpoints_and_security(tmp_path: Path) -> None:
         # 1. Replay Review HTML + modular static assets + PWA manifest (/, /review, /mobile aliases)
         r_rev = requests.get(f"{base}/review", timeout=5)
         assert r_rev.status_code == 200
-        assert "Fightcade Lab — Replay Review" in r_rev.text
+        assert "<title>Fightcade Lab</title>" in r_rev.text
         assert "/assets/styles.css" in r_rev.text
         assert "toggleTheme()" in r_rev.text
+        assert 'id="btnToggleLoop"' not in r_rev.text
+        assert 'id="btnExportShare"' not in r_rev.text
+        assert 'id="btnNewMomentTransport"' in r_rev.text
+        assert 'onclick="openComposer()"' in r_rev.text
+        assert 'id="btnPreviewLoop"' in r_rev.text
+        assert 'id="composerLoopBadge"' not in r_rev.text
+        assert 'id="composerAutoLoopHint"' not in r_rev.text
+        assert 'id="drillToggle"' not in r_rev.text
+        assert 'id="btnNotesDrillOnly"' not in r_rev.text
+
+        r_studio_js = requests.get(f"{base}/assets/js/studio.js", timeout=5)
+        assert r_studio_js.status_code == 200
+        assert "shareStudioMoment(" in r_studio_js.text
+        assert "toggleLoopPreview(" in r_studio_js.text
 
         r_state_js = requests.get(f"{base}/assets/js/state.js", timeout=5)
         assert r_state_js.status_code == 200
         assert "launchDrill(" in r_state_js.text
+        assert "runPracticeButton(" in r_state_js.text
 
         r_notes_js = requests.get(f"{base}/assets/js/notes.js", timeout=5)
         assert r_notes_js.status_code == 200
         assert "toggleNotePreview(" in r_notes_js.text
+        assert "practiceHubNote(" in r_notes_js.text
 
         r_app_js = requests.get(f"{base}/assets/js/app.js", timeout=5)
         assert r_app_js.status_code == 200
@@ -548,12 +699,42 @@ def test_mobile_http_endpoints_and_security(tmp_path: Path) -> None:
 
         r_mob = requests.get(f"{base}/mobile", timeout=5)
         assert r_mob.status_code == 200
-        assert "Fightcade Lab — Replay Review" in r_mob.text
+        assert "<title>Fightcade Lab</title>" in r_mob.text
 
         r_pwa = requests.get(f"{base}/manifest.webmanifest", timeout=5)
         assert r_pwa.status_code == 200
-        assert r_pwa.json()["display"] == "standalone"
-        assert r_pwa.json()["start_url"] == "/"
+        pwa_json = r_pwa.json()
+        assert pwa_json["display"] == "standalone"
+        assert pwa_json["start_url"] == "/"
+        pwa_icons = pwa_json.get("icons") or []
+        assert any(
+            ic.get("src") == "/assets/img/icon-192.png" and ic.get("sizes") == "192x192"
+            for ic in pwa_icons
+        )
+        assert any(
+            ic.get("src") == "/assets/img/icon-512.png" and ic.get("sizes") == "512x512"
+            for ic in pwa_icons
+        )
+
+        # Brand assets (favicons, touch icon, app icons, header banner)
+        assert 'href="/favicon.ico"' in r_rev.text
+        assert 'href="/apple-touch-icon.png"' in r_rev.text
+        assert 'class="brand-icon"' in r_rev.text
+        brand_asset_expectations = [
+            ("/favicon.ico", "image/x-icon"),
+            ("/apple-touch-icon.png", "image/png"),
+            ("/assets/img/favicon-32.png", "image/png"),
+            ("/assets/img/icon-192.png", "image/png"),
+            ("/assets/img/icon-512.png", "image/png"),
+            ("/assets/img/header-astro-lab.jpg", "image/jpeg"),
+        ]
+        for asset_path, expected_ct in brand_asset_expectations:
+            r_img = requests.get(f"{base}{asset_path}", timeout=5)
+            assert r_img.status_code == 200, f"{asset_path} returned {r_img.status_code}"
+            assert expected_ct in (r_img.headers.get("Content-Type") or "").lower(), (
+                f"{asset_path} Content-Type={r_img.headers.get('Content-Type')}"
+            )
+            assert len(r_img.content) > 100
 
         r_pwa_alias = requests.get(f"{base}/review/manifest.webmanifest", timeout=5)
         assert r_pwa_alias.status_code == 200
@@ -591,6 +772,28 @@ def test_mobile_http_endpoints_and_security(tmp_path: Path) -> None:
         assert r_post.status_code == 200
         ann_id = r_post.json()["annotation"]["id"]
         assert r_post.json()["annotation"]["drill_status"] == "ready"
+
+        # PATCH range bounds on queued_drill annotation -> 200 OK + updated bounds + re-baked drill
+        r_patch_range = requests.patch(
+            f"{base}/api/annotations/{ann_id}",
+            json={"start_gf": 15310, "end_gf": 15480},
+            headers={"Origin": base},
+            timeout=5,
+        )
+        assert r_patch_range.status_code == 200
+        assert r_patch_range.json()["annotation"]["start_gf"] == 15310
+        assert r_patch_range.json()["annotation"]["end_gf"] == 15480
+        assert r_patch_range.json()["annotation"]["drill_status"] == "ready"
+
+        # PATCH invalid range bounds (end_gf <= start_gf) -> 400 Bad Request
+        r_patch_bad = requests.patch(
+            f"{base}/api/annotations/{ann_id}",
+            json={"start_gf": 15480, "end_gf": 15310},
+            headers={"Origin": base},
+            timeout=5,
+        )
+        assert r_patch_bad.status_code == 400
+        assert r_patch_bad.json()["ok"] is False
 
         r_patch = requests.patch(
             f"{base}/api/annotations/{ann_id}",
@@ -668,13 +871,11 @@ def test_mobile_http_endpoints_and_security(tmp_path: Path) -> None:
         assert r_qpatch.json()["item"]["note"] == "Punish unsafe tatsu"
         assert r_qpatch.json()["item"]["tags"] == ["Whiff Punish"]
 
-        # 9. Replay manifest endpoint includes untriaged/active select_marks (excluding mobile_note)
+        # 9. Replay manifest endpoint omits retired automatic select_marks
         r_mf2 = requests.get(f"{base}/api/replays/{qid}/manifest", timeout=5)
         assert r_mf2.status_code == 200
         mf2_body = r_mf2.json()
-        assert len(mf2_body["select_marks"]) == 1
-        assert mf2_body["select_marks"][0]["id"] == f"{qid}_p1_sel1_gf15300_15450"
-        assert mf2_body["select_marks"][0]["needs_note"] is False
+        assert mf2_body["select_marks"] == []
     finally:
         server.shutdown()
         server.server_close()
@@ -796,7 +997,14 @@ def test_collated_notes_hub_merges_annotations_set_notes_select_marks_and_bookma
             + "\n"
         )
 
-    res = list_collated_notes(username="player1", data_dir=tmp_path)
+    # Default collation omits retired automatic in-game Select marks
+    res_default = list_collated_notes(username="player1", data_dir=tmp_path)
+    assert res_default["ok"] is True
+    assert res_default["counts"]["total"] == 3
+    assert res_default["counts"]["select_marks"] == 0
+
+    # Explicit opt-in include_select_marks=True preserves backward-compatible collation
+    res = list_collated_notes(username="player1", data_dir=tmp_path, include_select_marks=True)
     assert res["ok"] is True
     # Exactly 4 items (mobile_note queue copy was deduplicated!)
     assert res["counts"]["total"] == 4
@@ -836,7 +1044,7 @@ def test_collated_notes_hub_merges_annotations_set_notes_select_marks_and_bookma
     assert updated_sel["note"] == "Delay tech worked here"
     assert updated_sel["tags"] == ["Throw / Tech"]
 
-    res2 = list_collated_notes(username="player1", data_dir=tmp_path)
+    res2 = list_collated_notes(username="player1", data_dir=tmp_path, include_select_marks=True)
     s_item2 = next(n for n in res2["notes"] if n["id"] == sel_id)
     assert s_item2["needs_note"] is False
     assert s_item2["kind"] == "question"
@@ -949,3 +1157,52 @@ def test_other_username_search_isolation_and_punctuation_handles(tmp_path: Path)
         refresh_match_history("../evil", data_dir=tmp_path, fetch_fn=fake_fetch_dave)
     with pytest.raises(ValueError):
         list_matches(username="bad/name", data_dir=tmp_path)
+
+
+def test_mobile_topbar_hamburger_drawer_and_brand_icon():
+    web_dir = Path(__file__).resolve().parents[1] / "src" / "fightcade_analysis" / "web"
+    html = (web_dir / "index.html").read_text(encoding="utf-8")
+    css = (web_dir / "styles.css").read_text(encoding="utf-8")
+    app_js = (web_dir / "js" / "app.js").read_text(encoding="utf-8")
+    pop_js = (web_dir / "js" / "status_popover.js").read_text(encoding="utf-8")
+
+    # Mobile hamburger toggle, single-source-of-truth drawer, and backdrop exist
+    assert 'id="btnMobileMenu"' in html
+    assert 'aria-controls="topbarMenuDrawer"' in html
+    assert 'id="topbarMenuDrawer"' in html
+    assert 'id="mobileMenuBackdrop"' in html
+
+    # Single DOM source of truth: no duplicated nav/auth/status/theme IDs
+    for single_id in (
+        'id="navTabs"',
+        'id="navHome"',
+        'id="navMatches"',
+        'id="navNotes"',
+        'id="navInsights"',
+        'id="authControls"',
+        'id="btnStatusPill"',
+        'id="btnThemeToggle"',
+        'id="studioBreadcrumb"',
+    ):
+        assert html.count(single_id) == 1, f"Expected single instance of {single_id}"
+
+    # #navTabs and .topbar-right live inside #topbarMenuDrawer; #studioBreadcrumb stays in .topbar-left
+    drawer_start = html.index('id="topbarMenuDrawer"')
+    btn_menu_pos = html.index('id="btnMobileMenu"')
+    assert html.index('id="studioBreadcrumb"') < drawer_start
+    assert drawer_start < html.index('id="navTabs"') < btn_menu_pos
+    assert drawer_start < html.index('id="btnStatusPill"') < btn_menu_pos
+    assert drawer_start < html.index('id="btnThemeToggle"') < btn_menu_pos
+
+    # Mobile CSS rules (<= 899px): single-row nowrap topbar, 36x36 brand icon, drawer open rules
+    mobile_section = css[css.index("@media (max-width: 899px) {"):]
+    assert "flex-wrap: nowrap;" in mobile_section
+    assert ".brand-icon { width: 36px; height: 36px; }" in mobile_section
+    assert ".mobile-menu-btn {" in mobile_section
+    assert ".topbar-menu-drawer.open {" in mobile_section
+    assert ".mobile-menu-backdrop {" in mobile_section
+
+    # JS interaction wiring
+    for fn_name in ("function toggleMobileNavMenu()", "function closeMobileNavMenu(", "function isMobileNavMenuOpen()"):
+        assert fn_name in app_js
+    assert "closeMobileNavMenu()" in pop_js

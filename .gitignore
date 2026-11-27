@@ -28,6 +28,7 @@ data/
 # Secrets / Local Env & Private Agent Notes
 .env
 .env.*
+.wrangler/
 GEMINI.md
 docs/
 

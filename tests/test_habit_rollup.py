@@ -168,7 +168,7 @@ def test_aggregate_habit_rollup_and_hub_index(tmp_path: Path):
     assert "../clips/1795443936010-2584_gf1000.mp4" in html_doc
     assert 'id="habit-1"' in html_doc
     assert 'href="#habit-1"' in html_doc
-    assert "PRO ANSWER" not in html_doc
+    assert "TOP-RANK ANSWER" not in html_doc
 
     (reports_dir / f"{stem}.json").write_text(json.dumps(rollup), encoding="utf-8")
     (reports_dir / f"{stem}.html").write_text(html_doc, encoding="utf-8")

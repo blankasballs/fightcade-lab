@@ -1020,7 +1020,7 @@ def render_verified_habits_html(rollup: dict[str, Any], *, data_dir: Path = DEFA
                 pro_cmd = (
                     f".\\scripts\\takeover.ps1 -QuarkId {pc['quark_id']} "
                     f"-Frame {pc['game_frame']} -Player {pc['perspective']} "
-                    f"-Label \"Pro Solution {h['label']}\""
+                    f"-Label \"Top-Rank Solution {h['label']}\""
                 )
                 pclip = pc.get("clip_rel_path")
                 pro_players_html = format_matchup_players_html(
@@ -1036,28 +1036,28 @@ def render_verified_habits_html(rollup: dict[str, Any], *, data_dir: Path = DEFA
                     <div class="pro-card">
                       <div class="ex-head">
                         <div>
-                          <span class="pill-pro">VISUALLY VERIFIED PRO SOLUTION ({pc['similarity_pct']}% setup match)</span>
+                          <span class="pill-pro">VISUALLY VERIFIED TOP-RANK SOLUTION ({pc['similarity_pct']}% setup match)</span>
                           <strong>{pro_players_html}</strong>
                           <span class="muted">R{pc['round_id']} gf{pc['game_frame']} · EV {pc['outcome_value']:+.2f}</span>
                         </div>
-                        {render_takeover_buttons_html(str(pc['quark_id']), int(pc['game_frame']), int(pc['perspective']), f"Pro Solution {h['label']}", pro_cmd, is_pro=True)}
+                        {render_takeover_buttons_html(str(pc['quark_id']), int(pc['game_frame']), int(pc['perspective']), f"Top-Rank Solution {h['label']}", pro_cmd, is_pro=True)}
                       </div>
                       <div class="ex-desc">
-                        <div><strong>How the pro solved it:</strong> {html.escape(str(ver.get('pro_solution', '')))}</div>
+                        <div><strong>How the top-rank player solved it:</strong> {html.escape(str(ver.get('pro_solution', '')))}</div>
                         <div class="muted" style="margin-top:3px"><strong>Relevance check:</strong> {html.escape(str(ver.get('relevance_reason', '')))}</div>
                       </div>
-                      {f'<div class="vid-wrap"><div class="vid-bar"><span class="pill-pro">PRO FOOTAGE</span><button class="play-btn" onclick="togglePlay(\'{pvid_id}\', this)">Play</button></div><video id="{pvid_id}" controls playsinline preload="metadata" src="{html.escape(str(pclip))}"></video></div>' if pclip else ''}
+                      {f'<div class="vid-wrap"><div class="vid-bar"><span class="pill-pro">TOP-RANK FOOTAGE</span><button class="play-btn" onclick="togglePlay(\'{pvid_id}\', this)">Play</button></div><video id="{pvid_id}" controls playsinline preload="metadata" src="{html.escape(str(pclip))}"></video></div>' if pclip else ''}
                     </div>
                     """
                 )
             pro_html = f"""
             <div class="pro-section">
-              <div class="pro-section-title">How Pros Solved This Setup (Pass-2 Visually Verified{f' · {rej_cnt} false match(es) filtered out' if rej_cnt else ''})</div>
+              <div class="pro-section-title">How Top-Rank Players Solved This Setup (Pass-2 Visually Verified{f' · {rej_cnt} false match(es) filtered out' if rej_cnt else ''})</div>
               {''.join(pro_items)}
             </div>
             """
         elif rej_cnt > 0:
-            pro_html = f'<div class="pro-filtered-note">Pass-2 visual gate filtered out {rej_cnt} RAM pro candidate(s) that did not visually match this setup.</div>'
+            pro_html = f'<div class="pro-filtered-note">Pass-2 visual gate filtered out {rej_cnt} RAM top-rank candidate(s) that did not visually match this setup.</div>'
 
         open_attr = " open" if idx == 1 else ""
         habit_cards.append(
@@ -1083,7 +1083,7 @@ def render_verified_habits_html(rollup: dict[str, Any], *, data_dir: Path = DEFA
                 <div><strong>Opponents:</strong> {opps_str}</div>
               </div>
               <details id="habit-details-{idx}"{open_attr}>
-                <summary>View {len(user_cards)} verified clip(s) of your footage{f' + {len(v_pros)} verified pro solution(s)' if v_pros else ''}</summary>
+                <summary>View {len(user_cards)} verified clip(s) of your footage{f' + {len(v_pros)} verified top-rank solution(s)' if v_pros else ''}</summary>
                 <div class="cards-grid">{''.join(user_cards)}</div>
                 {pro_html}
               </details>
@@ -1192,7 +1192,7 @@ def render_verified_habits_html(rollup: dict[str, Any], *, data_dir: Path = DEFA
   <a class="back-link" href="/#insights">&larr; Fightcade Lab Insights</a>
   <header>
     <h1>{uname} ({pchar}) — Visually Verified Habit Rollup</h1>
-    <div class="sub">Hybrid VLM + RAM Pipeline (ADR-001): Hit-#1 health-loss anchoring · Pass-1 visual tagging on your top {ver_clips} clips · RAM setup search across {corpus_sz:,} pro points · Pass-2 visual relevance gate</div>
+    <div class="sub">Hybrid VLM + RAM Pipeline (ADR-001): Hit-#1 health-loss anchoring · Pass-1 visual tagging on your top {ver_clips} clips · RAM setup search across {corpus_sz:,} top-rank points · Pass-2 visual relevance gate</div>
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-val">{num_sets}</div><div class="kpi-lbl">Personal Sets</div></div>
       <div class="kpi"><div class="kpi-val">{tot_rounds}</div><div class="kpi-lbl">Rounds Scanned</div></div>

@@ -363,9 +363,18 @@ def test_consent_based_asset_installer_and_remote_stewardship_config(tmp_path: P
                     json_obj={
                         "tag_name": "v0.1.0",
                         "assets": [
-                            {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.test/SHA256SUMS.txt"},
-                            {"name": "fcadefbneo_fast.exe", "browser_download_url": "https://example.test/fcadefbneo_fast.exe"},
-                            {"name": "license.txt", "browser_download_url": "https://example.test/license.txt"},
+                            {
+                                "name": "SHA256SUMS.txt",
+                                "browser_download_url": "https://github.com/blankasballs/fightcade-fbneo-fast/releases/download/v0.1.0/SHA256SUMS.txt",
+                            },
+                            {
+                                "name": "fcadefbneo_fast.exe",
+                                "browser_download_url": "https://github.com/blankasballs/fightcade-fbneo-fast/releases/download/v0.1.0/fcadefbneo_fast.exe",
+                            },
+                            {
+                                "name": "license.txt",
+                                "browser_download_url": "https://github.com/blankasballs/fightcade-fbneo-fast/releases/download/v0.1.0/license.txt",
+                            },
                         ],
                     },
                 )

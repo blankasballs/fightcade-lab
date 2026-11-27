@@ -10,12 +10,14 @@ Licensing & SignPath Foundation compliance boundary:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 from pathlib import Path
 import re
 import shutil
 from typing import Any, Callable
+from urllib.parse import urlsplit
 import zipfile
 
 import requests
@@ -28,12 +30,27 @@ from fightcade_analysis.env_config import (
     save_app_config,
 )
 from fightcade_analysis.fetch_replays import DEFAULT_UA
+from fightcade_analysis.ota_lua import ed25519_verify
 from fightcade_analysis.uri_scheme import is_uri_scheme_registered
 
 FAST_FBNEO_RELEASES_API = "https://api.github.com/repos/blankasballs/fightcade-fbneo-fast/releases/latest"
+FAST_FBNEO_DOWNLOAD_PREFIX = "https://github.com/blankasballs/fightcade-fbneo-fast/releases/download/"
 FFMPEG_DEFAULT_RELEASE_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 
 _SHA256_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(.+)$")
+
+
+def _require_https_url(url: str, *, allowed_prefix: str | None = None, label: str = "URL") -> str:
+    """Validate that `url` uses HTTPS (and optionally matches an exact trusted prefix)."""
+    clean = str(url or "").strip()
+    if not clean or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in clean):
+        raise ValueError(f"Invalid {label}: {url!r}")
+    parsed = urlsplit(clean)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError(f"{label} must use https:// scheme: {url!r}")
+    if allowed_prefix and not clean.startswith(allowed_prefix):
+        raise ValueError(f"Untrusted {label}: must start with {allowed_prefix}")
+    return clean
 
 
 def parse_sha256sums(text: str) -> dict[str, str]:
@@ -70,6 +87,7 @@ def download_verified_asset(
     progress_cb: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Stream-download `url` to a temp file, verify exact SHA-256, and atomically move into place."""
+    url = _require_https_url(url, label="asset download URL")
     expected = str(expected_sha256 or "").strip().lower()
     if len(expected) != 64 or not all(c in "0123456789abcdef" for c in expected):
         raise ValueError("A valid 64-char hex expected_sha256 is required")
@@ -123,6 +141,9 @@ def install_fast_fbneo(
     *,
     consent: bool = False,
     release_api_url: str = FAST_FBNEO_RELEASES_API,
+    expected_sha256: str | None = None,
+    sums_signature_b64: str | None = None,
+    public_key_b64: str | None = None,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     """Consent-gated SHA-256 verified install of external `fcadefbneo_fast.exe` + FBNeo `license.txt`."""
@@ -132,6 +153,7 @@ def install_fast_fbneo(
     if not target_dir.is_dir():
         raise FileNotFoundError(f"Fightcade FBNeo directory does not exist: {target_dir}")
 
+    release_api_url = _require_https_url(release_api_url, label="release API URL")
     sess = session or requests.Session()
     rel_resp = sess.get(release_api_url, headers={"User-Agent": DEFAULT_UA}, timeout=20.0)
     if rel_resp.status_code != 200:
@@ -145,17 +167,68 @@ def install_fast_fbneo(
     if not sums_url or not exe_url:
         raise RuntimeError("Release is missing fcadefbneo_fast.exe or SHA256SUMS.txt")
 
+    sums_url = _require_https_url(
+        sums_url, allowed_prefix=FAST_FBNEO_DOWNLOAD_PREFIX, label="SHA256SUMS.txt URL"
+    )
+    exe_url = _require_https_url(
+        exe_url, allowed_prefix=FAST_FBNEO_DOWNLOAD_PREFIX, label="fcadefbneo_fast.exe URL"
+    )
+    if lic_url:
+        lic_url = _require_https_url(
+            lic_url, allowed_prefix=FAST_FBNEO_DOWNLOAD_PREFIX, label="license.txt URL"
+        )
+
     sums_resp = sess.get(sums_url, headers={"User-Agent": DEFAULT_UA}, timeout=20.0)
     if sums_resp.status_code != 200:
         raise RuntimeError(f"Could not download SHA256SUMS.txt (HTTP {sums_resp.status_code})")
+
+    if public_key_b64:
+        sums_bytes = getattr(sums_resp, "content", None)
+        if not isinstance(sums_bytes, (bytes, bytearray)):
+            sums_bytes = str(sums_resp.text or "").encode("utf-8")
+        sig_raw_b64 = sums_signature_b64
+        if not sig_raw_b64:
+            sig_url = assets.get("SHA256SUMS.txt.sig")
+            if not sig_url:
+                raise ValueError("Missing SHA256SUMS.txt.sig for Ed25519 checksum verification")
+            sig_url = _require_https_url(
+                sig_url, allowed_prefix=FAST_FBNEO_DOWNLOAD_PREFIX, label="SHA256SUMS.txt.sig URL"
+            )
+            sig_resp = sess.get(sig_url, headers={"User-Agent": DEFAULT_UA}, timeout=20.0)
+            if sig_resp.status_code != 200:
+                raise RuntimeError(f"Could not download SHA256SUMS.txt.sig (HTTP {sig_resp.status_code})")
+            sig_content = getattr(sig_resp, "content", None)
+            if isinstance(sig_content, (bytes, bytearray)) and len(sig_content) == 64:
+                sig_bytes = bytes(sig_content)
+            else:
+                sig_raw_b64 = str(sig_resp.text or "").strip()
+                sig_bytes = base64.b64decode(sig_raw_b64, validate=True)
+        else:
+            sig_bytes = base64.b64decode(str(sig_raw_b64).strip(), validate=True)
+        pub_bytes = base64.b64decode(public_key_b64.strip(), validate=True)
+        if not ed25519_verify(pub_bytes, bytes(sums_bytes), sig_bytes):
+            raise ValueError("Ed25519 signature verification failed for SHA256SUMS.txt")
+
     checksums = parse_sha256sums(sums_resp.text)
     if "fcadefbneo_fast.exe" not in checksums:
         raise RuntimeError("SHA256SUMS.txt does not contain an entry for fcadefbneo_fast.exe")
 
+    exe_expected_sha = checksums["fcadefbneo_fast.exe"]
+    if expected_sha256 is not None:
+        pinned = str(expected_sha256).strip().lower()
+        if len(pinned) != 64 or not all(c in "0123456789abcdef" for c in pinned):
+            raise ValueError("A valid 64-char hex expected_sha256 is required")
+        if exe_expected_sha != pinned:
+            raise ValueError(
+                f"Pinned SHA-256 mismatch for fcadefbneo_fast.exe: expected {pinned[:16]}..., "
+                f"SHA256SUMS.txt listed {exe_expected_sha[:16]}..."
+            )
+        exe_expected_sha = pinned
+
     exe_res = download_verified_asset(
         exe_url,
         target_dir / "fcadefbneo_fast.exe",
-        expected_sha256=checksums["fcadefbneo_fast.exe"],
+        expected_sha256=exe_expected_sha,
         session=sess,
     )
 

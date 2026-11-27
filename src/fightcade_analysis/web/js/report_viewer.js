@@ -6,7 +6,7 @@
 
 let _activeReportDoc = null;
 
-async function openReport(reportId, returnView = null) {
+async function openReport(reportId, returnView = null, opts = {}) {
   if (typeof video !== "undefined" && video) video.pause();
   if (typeof stopMiniPreview === "function") stopMiniPreview();
   const cleanId = String(reportId || "").replace(/^\/?#?report\//, "").replace(/^\/?reports\//, "").replace(/\.html$/i, "");
@@ -19,9 +19,9 @@ async function openReport(reportId, returnView = null) {
   }
 
   state.activeView = "report";
-  const targetHash = `#report/${encodeURIComponent(cleanId)}`;
-  if (window.location.hash !== targetHash) {
-    history.replaceState(null, "", window.location.pathname + window.location.search + targetHash);
+  const targetUrl = `/#report/${encodeURIComponent(cleanId)}`;
+  if (opts.updateHistory !== false && !state._routingFromPopstate && typeof updateAppHistory === "function") {
+    updateAppHistory(targetUrl);
   }
   syncTopNav();
 
@@ -55,23 +55,63 @@ function _openReportMomentInStudio(qid, persp, roundId, gf) {
   openMatch(qid, persp || 1, { round_id: roundId || 1, anchor_gf: gf || 0, autoPlay: false });
 }
 
-function _pinReportHabitAsGoal(habitIdx) {
+async function _pinReportHabitAsGoal(habitIdx, btnEl = null) {
   const doc = _activeReportDoc;
   if (!doc || !doc.habits || !doc.habits[habitIdx]) return;
+  if (getActiveFocuses().length >= 3) {
+    toast("Max 3 Active Focuses — graduate or unpin one first.");
+    return;
+  }
   const h = doc.habits[habitIdx];
   const title = h.label || h.interaction || "Recurring Habit";
   const firstEx = (h.examples || [])[0] || {};
   const firstVt = firstEx.visual_tag || {};
   const desc = firstVt.self_mistake || firstVt.what_happened ||
     (h.total_hp_lost ? `Recurring leak across ${h.sets_affected}/${h.total_sets} sets (-${h.total_hp_lost} HP).` : `Recurring leak (${h.occurrences || 0} occurrences).`);
-  openGoalModal(null, {
-    title: `Fix: ${title}`,
-    description: desc,
-    tags: [title],
-    trend_hint: "From AI Checkup",
-    source_insight_id: h.source_insight_id || `${doc.id}:${h.category || habitIdx}`,
-    seed_moments: h.seed_moments || [],
-  });
+
+  let seedMoments = Array.isArray(h.seed_moments) && h.seed_moments.length ? h.seed_moments : [];
+  if (!seedMoments.length && Array.isArray(h.examples) && h.examples.length) {
+    seedMoments = h.examples.slice(0, 6).filter(ep => ep.quark_id && (ep.t_cause_gf || ep.game_frame)).map(ep => {
+      const gf = Number(ep.t_cause_gf || ep.game_frame || 0);
+      const vt = ep.visual_tag || {};
+      return {
+        item_id: `rep_${ep.quark_id}_gf${gf}`,
+        source: "moment",
+        quark_id: ep.quark_id,
+        round_id: Number(ep.round_id || 0),
+        perspective: Number(ep.perspective || 1),
+        start_gf: Math.max(1, gf - 180),
+        end_gf: gf + 90,
+        anchor_gf: gf,
+        label: `${title}: ${vt.opp_move || ep.opp_char_name || "Clip"}`.slice(0, 120),
+        note: vt.self_mistake || vt.what_happened || "",
+        tags: [title],
+      };
+    });
+  }
+
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Pinning..."; }
+  try {
+    const res = await api("/api/focus-goals", {
+      method: "POST",
+      body: JSON.stringify({
+        owner: state.username || DEFAULT_USER,
+        title: `Fix: ${title}`,
+        description: desc,
+        tags: [title],
+        trend_hint: "From AI Checkup",
+        source_insight_id: h.source_insight_id || `${doc.id}:${h.category || habitIdx}`,
+        items: seedMoments,
+      }),
+    });
+    const cnt = Number((res.goal && res.goal.item_count) ?? seedMoments.length);
+    toast(`Pinned Active Focus "${res.goal.title}" with ${cnt} clip${cnt === 1 ? "" : "s"} ready to Watch & Train!`);
+    if (btnEl) btnEl.textContent = "✓ Pinned";
+    await Promise.all([loadPlaylists(false), loadFocusGoals()]);
+  } catch (err) {
+    toast(err.message);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = "+ Pin as Focus Goal"; }
+  }
 }
 
 function _renderClipActions(opts) {
@@ -79,7 +119,7 @@ function _renderClipActions(opts) {
   const startGf = Math.max(1, (Number(gf) || 0) - 180);
   const endGf = (Number(gf) || 0) + 90;
   const pracBtn = canTakeoverNow()
-    ? `<button class="sm ${isPro ? "emerald" : "amber"}" onclick="launchTakeoverPayload({quark_id:${escJsAttr(qid)},frame:${Number(gf) || 0},start_gf:${startGf},end_gf:${endGf},player:${Number(persp) || 1},bake_if_missing:true,label:${escJsAttr((label || "").slice(0, 90))}})">${isPro ? "▶ Practice Pro Clip" : "▶ Practice Takeover"}</button>`
+    ? `<button class="sm ${isPro ? "emerald" : "amber"} practice-btn" data-tip="Launch Replay Takeover in FBNeo for this clip" onclick="launchTakeoverPayload({quark_id:${escJsAttr(qid)},frame:${Number(gf) || 0},start_gf:${startGf},end_gf:${endGf},player:${Number(persp) || 1},bake_if_missing:true,label:${escJsAttr((label || "").slice(0, 90))},note:${escJsAttr((note || "").slice(0, 600))}}, this)">${isPro ? "▶ Practice Top-Rank Clip" : "▶ Practice Takeover"}</button>`
     : "";
   const studioBtn = (!isPro && hasStudio)
     ? `<button class="sm" onclick="_openReportMomentInStudio(${escJsAttr(qid)},${Number(persp) || 1},${Number(roundId) || 1},${Number(gf) || 0})">Open in Studio →</button>`
@@ -97,7 +137,7 @@ function _renderAiSynthesisBlock(synth) {
         <strong style="font-size:13.5px; color:var(--emerald-fg);">#${p.habit_rank || (idx + 1)} ${esc(p.title || "")}</strong>
       </div>
       ${p.diagnosis ? `<div style="font-size:12.5px; color:var(--text-body);">${esc(p.diagnosis)}</div>` : ""}
-      ${p.drill ? `<div style="font-size:12px; color:var(--muted); border-top:1px solid var(--border-soft); padding-top:6px;"><strong>Drill:</strong> ${esc(p.drill)}</div>` : ""}
+      ${p.drill ? `<div style="font-size:12px; color:var(--muted); border-top:1px solid var(--border-soft); padding-top:6px;"><strong>Practice:</strong> ${esc(p.drill)}</div>` : ""}
     </div>
   `).join("");
   return `
@@ -120,15 +160,15 @@ function _renderVerifiedHabitsReport(doc) {
 
     const exCards = (h.examples || []).map(ep => {
       const vt = ep.visual_tag || {};
-      const mu = `${ep.self_char_name || ""} vs ${ep.opp_char_name || ""}`;
-      const opp = ep.opp_player_name ? `vs ${ep.opp_player_name}` : "";
+      const muHtml = formatMatchLabelHtml(ep, { defaultSelfName: doc.username || state.username });
+      const muText = formatMatchLabelText(ep, { defaultSelfName: doc.username || state.username, showRank: false });
       return `
         <div class="report-clip-card">
           <div class="row-between">
             <span class="pill err">-${ep.hp_lost || 0} HP (${ep.hp_lost_pct || 0}%)</span>
             <span class="pill cached mono">${esc(ep.match_date || "")} · R${ep.round_id || "?"}</span>
           </div>
-          <div style="font-weight:700; font-size:13px;">${esc(mu)} ${opp ? `<span style="color:var(--muted); font-weight:500;">(${esc(opp)})</span>` : ""}</div>
+          <div style="font-weight:700; font-size:13px;">${muHtml}</div>
           ${_videoTagHtml(ep.clip_url)}
           ${vt.what_happened ? `<div class="report-callout">${esc(vt.what_happened)}</div>` : ""}
           ${vt.self_mistake ? `<div style="font-size:12px; color:var(--muted);"><strong>Mistake:</strong> ${esc(vt.self_mistake)}</div>` : ""}
@@ -137,7 +177,7 @@ function _renderVerifiedHabitsReport(doc) {
             gf: ep.t_cause_gf || ep.game_frame,
             roundId: ep.round_id,
             persp: ep.perspective,
-            label: `${h.label}: ${vt.opp_move || mu}`,
+            label: `${h.label}: ${vt.opp_move || muText}`,
             note: vt.self_mistake || vt.what_happened || "",
             source: "moment",
             hasStudio: ep.has_studio_replay,
@@ -149,16 +189,14 @@ function _renderVerifiedHabitsReport(doc) {
 
     const proCards = (h.verified_pro_solutions || []).map(ps => {
       const ver = ps.verification || ps.pass2_verdict || {};
-      const sRk = ps.self_rank_letter ? `<span class="rank">${esc(ps.self_rank_letter)}</span>` : "";
-      const oRk = ps.opp_rank_letter ? `<span class="rank">${esc(ps.opp_rank_letter)}</span>` : "";
       return `
         <div class="report-clip-card pro">
           <div class="row-between">
-            <span class="pill ready">Verified Pro Solution${ps.similarity_pct ? ` · ${ps.similarity_pct}%` : ""}</span>
+            <span class="pill ready">Verified Top-Rank Solution${ps.similarity_pct ? ` · ${ps.similarity_pct}%` : ""}</span>
             <span class="pill mono">R${ps.round_id || "?"} · gf${ps.game_frame || 0}</span>
           </div>
           <div style="font-weight:700; font-size:13px;">
-            ${esc(ps.self_player_name || "Pro")} ${sRk} (${esc(ps.self_char_name || "")}) <span style="color:var(--muted-dim);">vs</span> ${esc(ps.opp_player_name || "Opp")} ${oRk} (${esc(ps.opp_char_name || "")})
+            ${formatMatchLabelHtml(ps)}
           </div>
           ${_videoTagHtml(ps.clip_url)}
           ${ver.pro_solution ? `<div class="report-callout emerald">${esc(ver.pro_solution)}</div>` : ""}
@@ -167,7 +205,7 @@ function _renderVerifiedHabitsReport(doc) {
             gf: ps.game_frame,
             roundId: ps.round_id,
             persp: ps.perspective,
-            label: `Pro answer: ${ps.self_player_name || ""} (${ps.self_char_name || ""})`,
+            label: `Top-Rank Answer: ${ps.self_player_name || ""} (${ps.self_char_name || ""})`,
             note: ver.pro_solution || "",
             source: "pro_clip",
             hasStudio: false,
@@ -188,14 +226,14 @@ function _renderVerifiedHabitsReport(doc) {
             </div>
             <div class="row" style="gap:5px; margin-top:6px;">${opps}${moves}</div>
           </div>
-          <button class="emerald sm" onclick="_pinReportHabitAsGoal(${idx})">+ Pin as Focus Goal</button>
+          <button class="emerald sm" onclick="_pinReportHabitAsGoal(${idx}, this)">+ Pin as Focus Goal</button>
         </div>
 
         <div class="section-eyebrow" style="margin-top:10px;">YOUR VERIFIED EVIDENCE CLIPS</div>
         <div class="report-clip-grid">${exCards || `<div class="empty-inline">No clips saved.</div>`}</div>
 
         ${proCards ? `
-          <div class="section-eyebrow" style="margin-top:16px; color:var(--emerald-fg);">VISUALLY VERIFIED PRO SOLUTIONS</div>
+          <div class="section-eyebrow" style="margin-top:16px; color:var(--emerald-fg);">VISUALLY VERIFIED TOP-RANK SOLUTIONS</div>
           <div class="report-clip-grid">${proCards}</div>
         ` : ""}
       </div>
@@ -212,7 +250,7 @@ function _renderVerifiedHabitsReport(doc) {
           </div>
           <div style="font-size:21px; font-weight:800;">${esc(doc.title)}</div>
           <div style="font-size:13px; color:var(--muted); margin-top:4px;">
-            ${doc.num_sets || 0} sets · ${doc.total_rounds || 0} rounds · ${doc.total_damage_episodes || 0} Hit-#1 episodes · ${doc.visually_verified_clips || 0} visually verified clips · ${(doc.corpus_size || 0).toLocaleString()} pro reference points
+            ${doc.num_sets || 0} sets · ${doc.total_rounds || 0} rounds · ${doc.total_damage_episodes || 0} Hit-#1 episodes · ${doc.visually_verified_clips || 0} visually verified clips · ${(doc.corpus_size || 0).toLocaleString()} top-rank reference points
           </div>
         </div>
       </div>
@@ -226,7 +264,7 @@ function _renderFullSetReport(doc) {
   const isV2 = doc.pipeline === "hybrid_v2";
   const qid = doc.target_quark_id || "";
   const studioBtn = doc.has_studio_replay
-    ? `<button class="primary sm" onclick="_openReportMomentInStudio('${esc(qid)}',${doc.perspective || 1},1,0)">▶ Open Match in Studio</button>`
+    ? `<button class="primary sm" onclick="_openReportMomentInStudio(${escJsAttr(qid)},${Number(doc.perspective || 1)},1,0)">▶ Open in Studio</button>`
     : "";
 
   const momentsHtml = (doc.moments || []).map((m, idx) => {
@@ -249,17 +287,15 @@ function _renderFullSetReport(doc) {
 
     const proCards = proList.map((ps, pi) => {
       const ver = ps.verification || {};
-      const sRk = ps.self_rank_letter ? `<span class="rank">${esc(ps.self_rank_letter)}</span>` : "";
-      const oRk = ps.opp_rank_letter ? `<span class="rank">${esc(ps.opp_rank_letter)}</span>` : "";
       const caption = ver.pro_solution || (ai.clip_captions && ai.clip_captions[`alt_${pi + 1}`]) || "";
       return `
         <div class="report-clip-card pro">
           <div class="row-between">
-            <span class="pill ready">Pro Option #${pi + 1}${ps.similarity_pct ? ` · ${ps.similarity_pct}% match` : ""}</span>
+            <span class="pill ready">Top-Rank Option #${pi + 1}${ps.similarity_pct ? ` · ${ps.similarity_pct}% match` : ""}</span>
             <span class="pill mono">R${ps.round_id || "?"} · gf${ps.game_frame || 0}</span>
           </div>
           <div style="font-weight:700; font-size:13px;">
-            ${esc(ps.self_player_name || "Pro")} ${sRk} (${esc(ps.self_char_name || "")}) <span style="color:var(--muted-dim);">vs</span> ${esc(ps.opp_player_name || "Opp")} ${oRk} (${esc(ps.opp_char_name || "")})
+            ${formatMatchLabelHtml(ps)}
           </div>
           ${_videoTagHtml(ps.clip_url)}
           ${caption ? `<div class="report-callout emerald">${esc(caption)}</div>` : ""}
@@ -268,7 +304,7 @@ function _renderFullSetReport(doc) {
             gf: ps.game_frame,
             roundId: ps.round_id,
             persp: ps.perspective,
-            label: `Pro answer: ${ps.self_player_name || ""} (${ps.self_char_name || ""})`,
+            label: `Top-Rank Answer: ${ps.self_player_name || ""} (${ps.self_char_name || ""})`,
             note: caption,
             source: "pro_clip",
             hasStudio: false,
@@ -330,7 +366,7 @@ function _renderFullSetReport(doc) {
           </div>
           <div style="font-size:21px; font-weight:800;">${esc(doc.title)}</div>
           <div style="font-size:13px; color:var(--muted); margin-top:4px;">
-            ${(doc.moments || []).length} key moments · ${doc.total_damage_episodes || doc.total_decision_points || 0} analyzed situations · ${(doc.corpus_size || 0).toLocaleString()} pro points
+            ${(doc.moments || []).length} key moments · ${doc.total_damage_episodes || doc.total_decision_points || 0} analyzed situations · ${(doc.corpus_size || 0).toLocaleString()} top-rank points
           </div>
         </div>
         ${studioBtn}
@@ -344,8 +380,6 @@ function _renderSequenceSearchReport(doc) {
   const q = doc.query || {};
   const ai = doc.ai_summary || {};
   const matchesHtml = (doc.matches || []).map((m, idx) => {
-    const sRk = m.self_rank_letter ? `<span class="rank">${esc(m.self_rank_letter)}</span>` : "";
-    const oRk = m.opp_rank_letter ? `<span class="rank">${esc(m.opp_rank_letter)}</span>` : "";
     return `
       <div class="report-clip-card pro">
         <div class="row-between">
@@ -353,7 +387,7 @@ function _renderSequenceSearchReport(doc) {
           <span class="pill mono">R${m.round_id || "?"} · gf${m.game_frame || m.mid_gf || 0}</span>
         </div>
         <div style="font-weight:700; font-size:13px;">
-          ${esc(m.self_player_name || "Pro")} ${sRk} (${esc(m.self_char_name || "")}) <span style="color:var(--muted-dim);">vs</span> ${esc(m.opp_player_name || "Opp")} ${oRk} (${esc(m.opp_char_name || "")})
+          ${formatMatchLabelHtml(m)}
         </div>
         <div style="font-size:12px; color:var(--muted);">Action: <strong>${esc(m.action_coarse || "—")}</strong> · Outcome: ${Number(m.outcome_value || 0) >= 0 ? "+" : ""}${Math.round(Number(m.outcome_value || 0) * 100)}%</div>
         ${_videoTagHtml(m.clip_url)}
@@ -362,7 +396,7 @@ function _renderSequenceSearchReport(doc) {
           gf: m.game_frame || m.mid_gf,
           roundId: m.round_id,
           persp: m.perspective,
-          label: `Pro match: ${m.self_player_name || ""} (${m.self_char_name || ""})`,
+          label: `Top-Rank Match: ${m.self_player_name || ""} (${m.self_char_name || ""})`,
           note: m.label || "",
           source: "pro_clip",
           hasStudio: false,
@@ -383,10 +417,10 @@ function _renderSequenceSearchReport(doc) {
           </div>
           <div style="font-size:20px; font-weight:800;">${esc(doc.note || doc.title)}</div>
           <div style="font-size:13px; color:var(--muted); margin-top:4px;">
-            ${esc(doc.title)} · R${q.round_id || "?"} · gf${q.start_gf || 0}–${q.end_gf || 0} (${q.duration_s || 0}s) · Scanned ${doc.rounds_scanned || 0} pro rounds
+            ${esc(doc.title)} · R${q.round_id || "?"} · gf${q.start_gf || 0}–${q.end_gf || 0} (${q.duration_s || 0}s) · Scanned ${doc.rounds_scanned || 0} top-rank rounds
           </div>
         </div>
-        ${q.has_studio_replay ? `<button class="primary sm" onclick="_openReportMomentInStudio('${esc(q.quark_id)}',${q.perspective || 1},${q.round_id || 1},${q.start_gf || 0})">▶ Open in Studio</button>` : ""}
+        ${q.has_studio_replay ? `<button class="primary sm" onclick="_openReportMomentInStudio(${escJsAttr(q.quark_id)},${Number(q.perspective || 1)},${Number(q.round_id || 1)},${Number(q.start_gf || 0)})">▶ Open in Studio</button>` : ""}
       </div>
     </div>
 
@@ -423,7 +457,7 @@ function _renderSequenceSearchReport(doc) {
     </div>
 
     <div class="report-section-card">
-      <div class="section-eyebrow">TOP MATCHING PRO SEQUENCES (${(doc.matches || []).length})</div>
+      <div class="section-eyebrow">TOP MATCHING TOP-RANK SEQUENCES (${(doc.matches || []).length})</div>
       <div class="report-clip-grid">${matchesHtml}</div>
     </div>
   `;
@@ -437,7 +471,7 @@ function _renderLegacyRollupReport(doc) {
           <span class="pill drill">Regret ${Number(ep.regret || 0).toFixed(2)}</span>
           <span class="pill cached mono">${esc(ep.match_date || "")} · R${ep.round_id || "?"}</span>
         </div>
-        <div style="font-weight:700; font-size:13px;">${esc(ep.self_char_name || "")} vs ${esc(ep.opp_char_name || "")} (${esc(ep.opp_player_name || "")})</div>
+        <div style="font-weight:700; font-size:13px;">${formatMatchLabelHtml(ep, { defaultSelfName: doc.username || state.username })}</div>
         ${_videoTagHtml(ep.clip_url)}
         ${_renderClipActions({
           qid: ep.quark_id,
@@ -460,7 +494,7 @@ function _renderLegacyRollupReport(doc) {
             <span class="pill drill">Regret ${Number(h.total_regret || 0).toFixed(2)}</span>
             <span class="pill">${h.occurrences || 0} leaks · ${h.sets_affected || 0}/${h.total_sets || 0} sets</span>
           </div>
-          <button class="emerald sm" onclick="_pinReportHabitAsGoal(${idx})">+ Pin as Focus Goal</button>
+          <button class="emerald sm" onclick="_pinReportHabitAsGoal(${idx}, this)">+ Pin as Focus Goal</button>
         </div>
         <div class="report-clip-grid">${exCards}</div>
       </div>

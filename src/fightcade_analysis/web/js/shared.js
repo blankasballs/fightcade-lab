@@ -61,7 +61,7 @@ function drawSharedOverlayFrame() {
   }
   const pinLbl = document.getElementById("sharedReplyPinLabel");
   if (pinLbl) {
-    pinLbl.textContent = `Pin to current frame (gf${gf})`;
+    pinLbl.textContent = `Pin to current time (${formatRelativeClipTime(gf, startGf)})`;
   }
   const playBtn = document.getElementById("btnSharedPlayPause");
   if (playBtn) {
@@ -86,7 +86,7 @@ function seekSharedToGf(targetGf, pauseAfter = true) {
   sv.currentTime = off / 60.0;
   if (pauseAfter) sv.pause();
   drawSharedOverlayFrame();
-  toast(`Jumped to gf${targetGf}`);
+  toast(`Jumped to ${formatRelativeClipTime(targetGf, startGf)}`);
 }
 
 function toggleSharedPlay() {
@@ -166,12 +166,8 @@ function _mountSharedStageMedia(item, autoLoopSingle = true) {
   }, { once: true });
 
   sv.onended = () => {
-    if (state.activeView === "shared_playlist" && state.sharedPlaylistAutoAdvance && state.sharedPlaylist && (state.sharedPlaylist.items || []).length > 1) {
-      stepSharedPlaylist(1);
-    } else {
-      sv.currentTime = 0;
-      sv.play().catch(() => {});
-    }
+    sv.currentTime = 0;
+    sv.play().catch(() => {});
   };
 
   const tick = () => {
@@ -185,11 +181,35 @@ function _mountSharedStageMedia(item, autoLoopSingle = true) {
   state.sharedRaf = requestAnimationFrame(tick);
 }
 
-function practiceSharedItem() {
+function practiceSharedItem(btnEl = null) {
+  if (isMobileMode()) {
+    toast("Practice / Replay Takeover is only available on desktop.");
+    return;
+  }
   const item = _activeSharedItem();
   if (!item) return;
   const sides = _sharedProjectedSides(item, state.sharedPerspective);
-  const label = item.title || item.question || item.label || `${sides.selfChar || "3S"} vs ${sides.oppChar || ""}`;
+  const label = item.title || item.question || item.label || formatMatchLabelText({
+    self_player_name: sides.selfName,
+    opp_player_name: sides.oppName,
+    self_char_name: sides.selfChar,
+    opp_char_name: sides.oppChar,
+    quark_id: item.quark_id,
+  }, { allowPlaceholders: true, showRank: false });
+  if (isHostedMode() && !state.auth.authenticated) {
+    openCompanionModal(label, null, { signInRequired: true });
+    return;
+  }
+  const cap = String(item.shared_caption || "").trim();
+  const rawNote = String(item.note || "").trim();
+  const qText = String(item.question || "").trim();
+  let fullNote = "";
+  if (cap && rawNote && rawNote !== cap) {
+    fullNote = `${cap}\n\n${rawNote}`;
+  } else {
+    fullNote = cap || rawNote || qText;
+  }
+  const rawParentId = String(item.id || item.item_id || "").trim();
   const payload = {
     quark_id: item.quark_id,
     round_id: Number(item.round_id || 1),
@@ -199,12 +219,16 @@ function practiceSharedItem() {
     player: state.sharedPerspective,
     bake_if_missing: true,
     label,
+    note: fullNote,
   };
+  if (/^[A-Za-z0-9_-]{3,128}$/.test(rawParentId)) {
+    payload.parent_moment_id = rawParentId;
+  }
   if (!canTakeoverNow()) {
-    openCompanionModal(label, payload);
+    openCompanionModal(label, payload, { signInRequired: false });
     return;
   }
-  launchTakeoverPayload(payload);
+  launchTakeoverPayload(payload, btnEl);
 }
 
 function saveSharedItemToMyPlaylist() {
@@ -216,6 +240,14 @@ function saveSharedItemToMyPlaylist() {
     window.location.href = apiUrl(`/api/auth/discord/start?next=${next}`);
     return;
   }
+  const sides = _sharedProjectedSides(item, state.sharedPerspective);
+  const fallbackLabel = formatMatchLabelText({
+    self_player_name: sides.selfName,
+    opp_player_name: sides.oppName,
+    self_char_name: sides.selfChar,
+    opp_char_name: sides.oppChar,
+    quark_id: item.quark_id,
+  }, { allowPlaceholders: true, showRank: false });
   openAddToPlaylistModal({
     item_id: item.id || item.item_id,
     moment_id: state.activeView === "shared_moment" ? item.id : (item.moment_id || null),
@@ -226,8 +258,8 @@ function saveSharedItemToMyPlaylist() {
     start_gf: Number(item.start_gf || 0),
     end_gf: Number(item.end_gf || 0),
     anchor_gf: Number(item.anchor_gf || item.start_gf || 0),
-    label: (item.title || item.question || item.label || `${item.self_char_name || ""} vs ${item.opp_char_name || ""}`).slice(0, 120),
-    note: (item.note || "").slice(0, 300),
+    label: (item.title || item.question || item.label || fallbackLabel).slice(0, 120),
+    note: (item.note || "").slice(0, 600),
   });
 }
 
@@ -250,10 +282,13 @@ function _sharedStageHtml(hasVideo, isPlaylist) {
           <span id="sharedOvStatus" style="font-size:11px; color:var(--muted);"></span>
         </div>
         <span id="sharedFrameHud" class="frame-hud">R1 · 0.00s · gf0</span>
-        <div class="speed-group">
-          <button class="speed-btn ${state.sharedRate === 0.25 ? "active" : ""}" data-srate="0.25" onclick="setSharedRate(0.25)">0.25x</button>
-          <button class="speed-btn ${state.sharedRate === 0.5 ? "active" : ""}" data-srate="0.5" onclick="setSharedRate(0.5)">0.5x</button>
-          <button class="speed-btn ${state.sharedRate === 1 ? "active" : ""}" data-srate="1" onclick="setSharedRate(1)">1.0x</button>
+        <div class="row" style="gap:6px;">
+          <button class="speed-btn audio-btn" data-audio-mute="1" data-tip="Mute / Unmute audio (Shortcut: M)" aria-label="Mute or unmute audio" onclick="toggleVideoMute()">🔊</button>
+          <div class="speed-group">
+            <button class="speed-btn ${state.sharedRate === 0.25 ? "active" : ""}" data-srate="0.25" onclick="setSharedRate(0.25)">0.25x</button>
+            <button class="speed-btn ${state.sharedRate === 0.5 ? "active" : ""}" data-srate="0.5" onclick="setSharedRate(0.5)">0.5x</button>
+            <button class="speed-btn ${state.sharedRate === 1 ? "active" : ""}" data-srate="1" onclick="setSharedRate(1)">1.0x</button>
+          </div>
         </div>
       </div>
     </div>
@@ -268,10 +303,9 @@ function _sharedStageHtml(hasVideo, isPlaylist) {
         ${isPlaylist ? `<button class="step-btn" onclick="stepSharedPlaylist(1)">Next →</button>` : ""}
       </div>
       <div class="transport-actions">
-        ${isPlaylist ? `<button id="btnSharedLoopToggle" class="sm ${state.sharedPlaylistAutoAdvance ? "primary" : ""}" onclick="toggleSharedPlaylistAutoAdvance()">${state.sharedPlaylistAutoAdvance ? "Auto-Advance" : "Loop Current"}</button>` : ""}
-        <button id="btnSharedFlip" class="sm" onclick="flipSharedPerspective()">⇄ Flip P${state.sharedPerspective === 1 ? 2 : 1}</button>
-        <button class="sm" onclick="saveSharedItemToMyPlaylist()">+ Save to My Playlist</button>
-        <button class="sm amber-cta" onclick="practiceSharedItem()">▶ Practice in Takeover</button>
+        <button id="btnSharedFlip" class="sm" data-tip="Switch P1 / P2 perspective" onclick="flipSharedPerspective()">⇄ Flip P${state.sharedPerspective === 1 ? 2 : 1}</button>
+        <button class="sm" data-tip="Save this clip to one of your playlists" onclick="saveSharedItemToMyPlaylist()">+ Save to My Playlist</button>
+        <button class="sm amber-cta practice-btn" data-tip="Launch Replay Takeover in FBNeo for this clip" onclick="practiceSharedItem(this)">▶ Practice</button>
       </div>
     </div>
   `;
@@ -280,7 +314,7 @@ function _sharedStageHtml(hasVideo, isPlaylist) {
 // =========================================================================
 // SHARED MOMENT VIEW (/m/:id)
 // =========================================================================
-async function openSharedMoment(momentId) {
+async function openSharedMoment(momentId, opts = {}) {
   if (typeof video !== "undefined" && video) video.pause();
   if (typeof stopMiniPreview === "function") stopMiniPreview();
   stopSharedPlayback();
@@ -288,6 +322,12 @@ async function openSharedMoment(momentId) {
   state.activeView = "shared_moment";
   state.sharedMoment = null;
   state.sharedReplies = [];
+  if (opts.updateHistory !== false && !state._routingFromPopstate && typeof updateAppHistory === "function") {
+    const targetUrl = isHostedMode()
+      ? `/m/${encodeURIComponent(momentId)}`
+      : `/#m/${encodeURIComponent(momentId)}`;
+    updateAppHistory(targetUrl);
+  }
   syncTopNav();
 
   const host = document.getElementById("sharedContent");
@@ -320,7 +360,13 @@ function renderSharedMomentHeaderOnly() {
   const sides = _sharedProjectedSides(m, state.sharedPerspective);
   const titleEl = document.getElementById("sharedMatchupLine");
   if (titleEl) {
-    titleEl.innerHTML = `<span style="color:var(--accent-fg);">${esc(sides.selfChar || "P1")}</span> <span style="color:var(--muted-dim);">vs</span> <span style="color:var(--rose-fg);">${esc(sides.oppChar || "P2")}</span> <span style="font-size:13px; color:var(--muted); font-weight:600;">(${esc(sides.selfName)} vs ${esc(sides.oppName)})</span>`;
+    titleEl.innerHTML = formatMatchLabelHtml({
+      self_player_name: sides.selfName,
+      opp_player_name: sides.oppName,
+      self_char_name: sides.selfChar,
+      opp_char_name: sides.oppChar,
+      quark_id: m.quark_id,
+    }, { allowPlaceholders: true });
   }
   const flipBtn = document.getElementById("btnSharedFlip");
   if (flipBtn) flipBtn.textContent = `⇄ Flip P${state.sharedPerspective === 1 ? 2 : 1}`;
@@ -328,11 +374,14 @@ function renderSharedMomentHeaderOnly() {
 
 function _renderRepliesListHtml(replies) {
   if (!replies || !replies.length) {
-    return `<div class="empty-inline">No coaching replies yet. Pause at a key frame and drop a frame-pinned tip below!</div>`;
+    return `<div class="empty-inline">No coaching replies yet. Pause at a key frame and drop a pinned tip below!</div>`;
   }
+  const activeItem = _activeSharedItem();
+  const baseStartGf = Number((activeItem && activeItem.start_gf) || 0);
   return replies.map(rep => {
+    const relTime = rep.game_frame != null ? formatRelativeClipTime(rep.game_frame, baseStartGf) : "";
     const frameBtn = rep.game_frame != null
-      ? `<button type="button" class="pill cached mono" style="cursor:pointer;" onclick="seekSharedToGf(${Number(rep.game_frame)}, true)" title="Seek straight to frame gf${Number(rep.game_frame)}">🎯 gf${Number(rep.game_frame)}</button>`
+      ? `<button type="button" class="pill cached mono" style="cursor:pointer;" onclick="seekSharedToGf(${Number(rep.game_frame)}, true)" data-tip="Seek to ${esc(relTime)} (gf${Number(rep.game_frame)})" title="Seek to ${esc(relTime)} (gf${Number(rep.game_frame)})">🎯 ${esc(relTime)}</button>`
       : "";
     return `
       <div class="reply-card">
@@ -341,7 +390,7 @@ function _renderRepliesListHtml(replies) {
             <strong style="font-size:13px;">${esc(rep.author_name || "Coach")}</strong>
             ${frameBtn}
           </div>
-          <span style="font-size:11px; color:var(--muted);">${esc((rep.created_at || "").slice(0, 10))}</span>
+          <span style="font-size:11px; color:var(--muted);" data-tip="Reply timestamp (local timezone)">${esc(formatTimestampWithTz(rep.created_at, (rep.created_at || "").slice(0, 10)))}</span>
         </div>
         <div class="note-body" style="margin:4px 0 0;">${esc(rep.body)}</div>
       </div>
@@ -353,9 +402,17 @@ function renderSharedMomentView() {
   const host = document.getElementById("sharedContent");
   const m = state.sharedMoment;
   if (!host || !m) return;
+  if (typeof updateDocumentTitle === "function") updateDocumentTitle();
   const sides = _sharedProjectedSides(m, state.sharedPerspective);
-  const tagsHtml = (m.tags || []).map(t => `<span class="pill note">${esc(t)}</span>`).join("");
-  const shareUrl = `${window.location.origin}/m/${encodeURIComponent(m.id)}`;
+  const tagsHtml = getDisplayTagsForItem(m).map(t => `<span class="pill note">${esc(t)}</span>`).join("");
+  const originPill = renderSystemOriginBadgeHtml(m);
+  const clipDur = formatClipDuration(m.start_gf, m.end_gf, 60);
+  const clipDurPill = clipDur
+    ? `<span class="pill cached mono" data-tip="R${Number(m.round_id || 1)} · gf${Number(m.start_gf || 0)}–${Number(m.end_gf || 0)}">${esc(clipDur)} clip</span>`
+    : "";
+  const initPinRel = formatRelativeClipTime(m.anchor_gf || m.start_gf || 0, m.start_gf || 0);
+  const shareKey = m.share_token || m.id;
+  const shareUrl = m.share_url || `${window.location.origin}/m/${encodeURIComponent(shareKey)}`;
 
   const replyFormHtml = (!isHostedMode() || state.auth.authenticated)
     ? `
@@ -364,7 +421,7 @@ function renderSharedMomentView() {
           <strong style="font-size:13px;">Add Coaching Reply</strong>
           <label class="row" style="gap:5px; font-size:11.5px; color:var(--muted); cursor:pointer;">
             <input id="sharedReplyPinCheck" type="checkbox" checked />
-            <span id="sharedReplyPinLabel" class="mono">Pin to current frame (gf${Number(m.anchor_gf || m.start_gf || 0)})</span>
+            <span id="sharedReplyPinLabel" class="mono">Pin to current time (${esc(initPinRel)})</span>
           </label>
         </div>
         <textarea id="sharedReplyText" class="input compact-textarea" placeholder="Share counterplay, spacing cues, or option selects..."></textarea>
@@ -377,35 +434,36 @@ function renderSharedMomentView() {
     : `
       <div class="card" style="margin-top:10px; background:var(--surface-note); text-align:center;">
         <div style="font-size:12.5px; color:var(--muted); margin-bottom:8px;">Sign in with Discord to post frame-pinned coaching replies or save clips to your playlists.</div>
-        <a class="btn-link primary sm" href="${esc(apiUrl(`/api/auth/discord/start?next=${encodeURIComponent(`/m/${m.id}`)}`))}">Sign in with Discord</a>
+        <a class="btn-link primary sm" href="${esc(safeHref(apiUrl(`/api/auth/discord/start?next=${encodeURIComponent(`/m/${shareKey}`)}`)))}">Sign in with Discord</a>
       </div>
     `;
 
+  const metaRowHtml = `${originPill}${clipDurPill}${m.author_name ? `<span style="font-size:12px; color:var(--muted);">Shared by <strong>${esc(m.author_name)}</strong></span>` : ""}`;
   host.innerHTML = `
     <div class="shared-grid">
       <div class="shared-left">
         <div class="card" style="margin-bottom:10px; padding:12px 14px;">
           <div class="row-between">
             <div>
-              <div class="row" style="gap:6px; margin-bottom:4px;">
-                <span class="pill kind-${esc(m.kind || "note")}">${esc(KIND_LABELS[m.kind] || m.kind || "Moment")}</span>
-                <span class="pill cached mono">R${m.round_id || 1} · gf${m.start_gf}–${m.end_gf}</span>
-                ${m.author_name ? `<span style="font-size:12px; color:var(--muted);">Shared by <strong>${esc(m.author_name)}</strong></span>` : ""}
-              </div>
+              ${metaRowHtml ? `<div class="row" style="gap:6px; margin-bottom:4px;">${metaRowHtml}</div>` : ""}
               <div id="sharedMatchupLine" style="font-size:17px; font-weight:800;">
-                <span style="color:var(--accent-fg);">${esc(sides.selfChar || "P1")}</span>
-                <span style="color:var(--muted-dim);">vs</span>
-                <span style="color:var(--rose-fg);">${esc(sides.oppChar || "P2")}</span>
-                <span style="font-size:13px; color:var(--muted); font-weight:600;">(${esc(sides.selfName)} vs ${esc(sides.oppName)})</span>
+                ${formatMatchLabelHtml({
+                  self_player_name: sides.selfName,
+                  opp_player_name: sides.oppName,
+                  self_char_name: sides.selfChar,
+                  opp_char_name: sides.oppChar,
+                  quark_id: m.quark_id,
+                }, { allowPlaceholders: true })}
               </div>
             </div>
             <div class="row" style="gap:6px;">
-              <button class="sm" onclick="copyText('${esc(shareUrl)}', 'Copied share link')">↗ Copy Link</button>
-              <button class="sm ghost" onclick="openReportModal('moment', '${esc(m.id)}')" title="Report inappropriate content">Report</button>
+              <button class="sm" onclick="copyText(${escJsAttr(shareUrl)}, 'Copied share link')">↗ Copy Link</button>
+              <button class="sm ghost" onclick="openReportModal('moment', ${escJsAttr(m.id)})" title="Report inappropriate content">Report</button>
             </div>
           </div>
           ${m.question ? `<div class="report-callout" style="margin-top:8px;"><strong>Question:</strong> ${esc(m.question)}</div>` : ""}
-          ${m.note ? `<div class="note-body" style="margin-top:8px;">${esc(m.note)}</div>` : ""}
+          ${m.shared_caption ? `<div class="note-body" style="margin-top:8px;">${esc(m.shared_caption)}</div>` : ""}
+          ${m.note && m.note !== m.shared_caption ? `<div class="note-body" style="margin-top:8px;">${esc(m.note)}</div>` : ""}
           ${tagsHtml ? `<div class="row" style="gap:5px; margin-top:6px;">${tagsHtml}</div>` : ""}
         </div>
 
@@ -447,7 +505,7 @@ async function postSharedMomentReply() {
     if (tsToken) {
       payload["cf-turnstile-response"] = tsToken;
     }
-    const res = await api(`/api/moments/${encodeURIComponent(m.id)}/replies`, {
+    const res = await api(`/api/moments/${encodeURIComponent(m.share_token || m.id)}/replies`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -457,7 +515,7 @@ async function postSharedMomentReply() {
     if (host) host.innerHTML = _renderRepliesListHtml(state.sharedReplies);
     const cnt = document.getElementById("sharedReplyCnt");
     if (cnt) cnt.textContent = String(state.sharedReplies.length);
-    toast(game_frame != null ? `Reply pinned at gf${game_frame}` : "Reply posted");
+    toast(game_frame != null ? `Reply pinned at ${formatRelativeClipTime(game_frame, m.start_gf)}` : "Reply posted");
   } catch (err) {
     toast("Reply failed: " + err.message);
   } finally {
@@ -471,7 +529,7 @@ async function postSharedMomentReply() {
 // =========================================================================
 // SHARED PLAYLIST VIEW (/p/:id)
 // =========================================================================
-async function openSharedPlaylist(playlistId) {
+async function openSharedPlaylist(playlistId, opts = {}) {
   if (typeof video !== "undefined" && video) video.pause();
   if (typeof stopMiniPreview === "function") stopMiniPreview();
   stopSharedPlayback();
@@ -479,6 +537,12 @@ async function openSharedPlaylist(playlistId) {
   state.activeView = "shared_playlist";
   state.sharedPlaylist = null;
   state.sharedPlaylistIndex = 0;
+  if (opts.updateHistory !== false && !state._routingFromPopstate && typeof updateAppHistory === "function") {
+    const targetUrl = isHostedMode()
+      ? `/p/${encodeURIComponent(playlistId)}`
+      : `/#p/${encodeURIComponent(playlistId)}`;
+    updateAppHistory(targetUrl);
+  }
   syncTopNav();
 
   const host = document.getElementById("sharedContent");
@@ -490,7 +554,7 @@ async function openSharedPlaylist(playlistId) {
     const first = (res.playlist.items || [])[0];
     state.sharedPerspective = first && Number(first.perspective) === 2 ? 2 : 1;
     renderSharedPlaylistView();
-    if (first) _mountSharedStageMedia(first, !state.sharedPlaylistAutoAdvance);
+    if (first) _mountSharedStageMedia(first, true);
     syncOverlayButtons();
   } catch (err) {
     if (host) {
@@ -512,7 +576,7 @@ function selectSharedPlaylistItem(idx) {
   const cur = pl.items[state.sharedPlaylistIndex];
   state.sharedPerspective = Number(cur.perspective) === 2 ? 2 : 1;
   renderSharedPlaylistView();
-  _mountSharedStageMedia(cur, !state.sharedPlaylistAutoAdvance);
+  _mountSharedStageMedia(cur, true);
   syncOverlayButtons();
 }
 
@@ -523,23 +587,20 @@ function stepSharedPlaylist(delta) {
   selectSharedPlaylistItem((state.sharedPlaylistIndex + delta + n) % n);
 }
 
-function toggleSharedPlaylistAutoAdvance() {
-  state.sharedPlaylistAutoAdvance = !state.sharedPlaylistAutoAdvance;
-  const btn = document.getElementById("btnSharedLoopToggle");
-  if (btn) {
-    btn.textContent = state.sharedPlaylistAutoAdvance ? "Auto-Advance" : "Loop Current";
-    btn.classList.toggle("primary", state.sharedPlaylistAutoAdvance);
-  }
-  const sv = document.getElementById("sharedVideo");
-  if (sv) sv.loop = !state.sharedPlaylistAutoAdvance;
-}
-
 function renderSharedPlaylistHeaderOnly() {
   const cur = _activeSharedItem();
   if (!cur) return;
   const sides = _sharedProjectedSides(cur, state.sharedPerspective);
   const el = document.getElementById("sharedPlClipMatchup");
-  if (el) el.textContent = `${sides.selfChar || "P1"} vs ${sides.oppChar || "P2"}`;
+  if (el) {
+    el.innerHTML = formatMatchLabelHtml({
+      self_player_name: sides.selfName,
+      opp_player_name: sides.oppName,
+      self_char_name: sides.selfChar,
+      opp_char_name: sides.oppChar,
+      quark_id: cur.quark_id,
+    }, { allowPlaceholders: true });
+  }
   const flipBtn = document.getElementById("btnSharedFlip");
   if (flipBtn) flipBtn.textContent = `⇄ Flip P${state.sharedPerspective === 1 ? 2 : 1}`;
 }
@@ -548,33 +609,55 @@ function renderSharedPlaylistView() {
   const host = document.getElementById("sharedContent");
   const pl = state.sharedPlaylist;
   if (!host || !pl) return;
+  if (typeof updateDocumentTitle === "function") updateDocumentTitle();
   const items = pl.items || [];
   const cur = items[state.sharedPlaylistIndex] || null;
-  const shareUrl = `${window.location.origin}/p/${encodeURIComponent(pl.id)}`;
+  const plShareKey = pl.share_token || pl.id;
+  const shareUrl = pl.share_url || `${window.location.origin}/p/${encodeURIComponent(plShareKey)}`;
 
   const listHtml = items.length
     ? items.map((it, idx) => {
         const active = idx === state.sharedPlaylistIndex;
-        const mu = (it.self_char_name || it.opp_char_name)
-          ? `${it.self_char_name || "?"} vs ${it.opp_char_name || "?"}`
-          : it.quark_id;
+        const rowSides = _sharedProjectedSides(it, Number(it.perspective) === 2 ? 2 : 1);
+        const rowMatchObj = {
+          self_player_name: rowSides.selfName,
+          opp_player_name: rowSides.oppName,
+          self_char_name: rowSides.selfChar,
+          opp_char_name: rowSides.oppChar,
+          quark_id: it.quark_id,
+        };
+        const muText = formatMatchLabelText(rowMatchObj, { allowPlaceholders: true, showRank: false });
+        const muHtml = formatMatchLabelHtml(rowMatchObj, { allowPlaceholders: true });
+        const mLinkKey = it.moment_share_token || it.moment_id;
+        const rowDur = formatClipDuration(it.start_gf, it.end_gf, 60);
         return `
           <div class="pl-item-row shared-pl-row ${active ? "active" : ""}" onclick="selectSharedPlaylistItem(${idx})">
             <div style="min-width:0; flex:1;">
               <div class="row" style="gap:6px;">
                 <span class="mono" style="font-size:11px; color:var(--muted-dim);">#${idx + 1}</span>
-                <strong style="font-size:13px;">${esc(it.label || mu)}</strong>
+                <strong style="font-size:13px;">${esc(it.label || muText)}</strong>
+                ${rowDur ? `<span class="pill mono" style="color:var(--muted);">${esc(rowDur)}</span>` : ""}
               </div>
-              <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">${esc(mu)} · R${it.round_id || 1}</div>
+              <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">${muHtml}</div>
             </div>
-            ${it.moment_id ? `<a class="sm ghost" href="/m/${encodeURIComponent(it.moment_id)}" onclick="event.stopPropagation(); event.preventDefault(); openSharedMoment('${esc(it.moment_id)}');" title="Open full moment + replies">↗</a>` : ""}
+            ${mLinkKey ? `<a class="sm ghost" href="${esc(safeHref(`/m/${encodeURIComponent(mLinkKey)}`))}" onclick="event.stopPropagation(); event.preventDefault(); openSharedMoment(${escJsAttr(mLinkKey)});" title="Open full moment + replies">↗</a>` : ""}
           </div>
         `;
       }).join("")
     : `<div class="empty-inline">This playlist has no clips yet.</div>`;
 
   const curSides = cur ? _sharedProjectedSides(cur, state.sharedPerspective) : null;
+  const curMatchupHtml = curSides
+    ? formatMatchLabelHtml({
+        self_player_name: curSides.selfName,
+        opp_player_name: curSides.oppName,
+        self_char_name: curSides.selfChar,
+        opp_char_name: curSides.oppChar,
+        quark_id: cur.quark_id,
+      }, { allowPlaceholders: true })
+    : "";
 
+  const curDur = cur ? formatClipDuration(cur.start_gf, cur.end_gf, 60) : "";
   host.innerHTML = `
     <div class="card" style="margin-bottom:12px;">
       <div class="row-between">
@@ -588,8 +671,8 @@ function renderSharedPlaylistView() {
           ${pl.description ? `<div style="font-size:13px; color:var(--muted); margin-top:3px;">${esc(pl.description)}</div>` : ""}
         </div>
         <div class="row" style="gap:6px;">
-          <button class="sm" onclick="copyText('${esc(shareUrl)}', 'Copied playlist link')">↗ Copy Link</button>
-          <button class="sm ghost" onclick="openReportModal('playlist', '${esc(pl.id)}')">Report</button>
+          <button class="sm" onclick="copyText(${escJsAttr(shareUrl)}, 'Copied playlist link')">↗ Copy Link</button>
+          <button class="sm ghost" onclick="openReportModal('playlist', ${escJsAttr(pl.id)})">Report</button>
         </div>
       </div>
     </div>
@@ -599,8 +682,8 @@ function renderSharedPlaylistView() {
         ${cur ? `
           <div class="card" style="margin-bottom:10px; padding:10px 14px;">
             <div class="row-between">
-              <strong id="sharedPlClipMatchup" style="font-size:14.5px;">${esc(curSides.selfChar || "P1")} vs ${esc(curSides.oppChar || "P2")}</strong>
-              <span class="pill cached mono">Clip ${state.sharedPlaylistIndex + 1} / ${items.length} · R${cur.round_id || 1}</span>
+              <strong id="sharedPlClipMatchup" style="font-size:14.5px;">${curMatchupHtml}</strong>
+              <span class="pill cached mono">Clip ${state.sharedPlaylistIndex + 1} / ${items.length}${curDur ? ` · ${esc(curDur)}` : ""}</span>
             </div>
             ${cur.label ? `<div style="font-weight:700; font-size:13px; color:var(--accent-fg); margin-top:4px;">${esc(cur.label)}</div>` : ""}
             ${cur.note ? `<div class="note-body" style="margin-top:4px;">${esc(cur.note)}</div>` : ""}

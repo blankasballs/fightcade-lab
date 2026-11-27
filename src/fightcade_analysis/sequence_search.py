@@ -705,7 +705,7 @@ def build_sequence_search_html(
         <div class="ai-box">
           <div class="ai-title">AI Sequence Comparison <span class="badge badge-ai">{html.escape(str(ai.get('model', 'gemini')))}</span></div>
           {f"<p><strong>Shared pattern:</strong> {html.escape(str(ai['pattern_summary']))}</p>" if ai.get('pattern_summary') else ""}
-          {f"<p><strong>Pro takeaway:</strong> {html.escape(str(ai['pro_takeaway']))}</p>" if ai.get('pro_takeaway') else ""}
+          {f"<p><strong>Top-Rank takeaway:</strong> {html.escape(str(ai['pro_takeaway']))}</p>" if ai.get('pro_takeaway') else ""}
         </div>
         """
 
