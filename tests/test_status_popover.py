@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -110,6 +111,7 @@ process.stdout.write(JSON.stringify(out));
     proc = subprocess.run(
         [node_bin, "-e", driver],
         env={
+            **os.environ,
             "STATE_JS_PATH": str(STATE_JS),
             "POPOVER_JS_PATH": str(POPOVER_JS),
             "TEST_JS": js_body,

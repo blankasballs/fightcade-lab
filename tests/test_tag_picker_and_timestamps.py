@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -62,7 +63,7 @@ process.stdout.write(JSON.stringify(out));
 """
     proc = subprocess.run(
         [node_bin, "-e", driver],
-        env={"STATE_JS_PATH": str(STATE_JS), "TEST_JS": js_body},
+        env={**os.environ, "STATE_JS_PATH": str(STATE_JS), "TEST_JS": js_body},
         capture_output=True,
         text=True,
         check=False,

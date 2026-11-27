@@ -26,9 +26,7 @@ from fightcade_analysis.clip_renderer import (
     find_parquet_for_quark,
     render_clips_batch,
 )
-from fightcade_analysis.coaching import _similarity_pct
 from fightcade_analysis.gemini_summary import DEFAULT_MODEL_CHAIN, load_gemini_api_key
-from fightcade_analysis.index import HierarchicalContextIndex, load_or_build_corpus
 from fightcade_analysis.naming import (
     build_coaching_report_stem,
     build_reports_index_html,
@@ -36,8 +34,6 @@ from fightcade_analysis.naming import (
     extract_match_date,
     resolve_replay_players_and_ranks,
 )
-from fightcade_analysis.segmentation import SegmentationConfig
-from fightcade_analysis.sequence_search import search_similar_sequences
 
 
 def _clip_info(
@@ -501,23 +497,26 @@ class ProSearchService:
         *,
         data_dir: Path = DEFAULT_DATA_DIR,
         is_live_match_fn: Callable[[], bool] | None = None,
-        corpus_index: HierarchicalContextIndex | None = None,
+        corpus_index: Any | None = None,
         search_fn: Callable[..., dict[str, Any]] | None = None,
         render_clips_fn: Callable[..., tuple[dict[str, Any], dict[str, int]]] | None = None,
     ) -> None:
         self.data_dir = data_dir.resolve()
         self._is_live_match_fn = is_live_match_fn or (lambda: False)
         self._lock = threading.Lock()
-        self._cached_index: HierarchicalContextIndex | None = corpus_index
+        self._cached_index: Any | None = corpus_index
         self._cached_sig: tuple[int, int] | None = None
-        self._search_fn = search_fn or search_similar_sequences
+        self._search_fn = search_fn
         self._render_clips_fn = render_clips_fn or render_clips_batch
 
-    def _get_or_load_index(self) -> HierarchicalContextIndex:
+    def _get_or_load_index(self) -> Any:
         with self._lock:
             if self._cached_index is not None and self._cached_sig is None:
                 # Injected index (tests)
                 return self._cached_index
+            from fightcade_analysis.index import HierarchicalContextIndex, load_or_build_corpus
+            from fightcade_analysis.segmentation import SegmentationConfig
+
             pq_dir = self.data_dir / "parquet"
             files = sorted(pq_dir.glob("*.parquet")) if pq_dir.is_dir() else []
             if not files:
@@ -567,8 +566,16 @@ class ProSearchService:
 
         t0 = time.perf_counter()
         idx = self._get_or_load_index()
+        from fightcade_analysis.coaching import _similarity_pct
+        from fightcade_analysis.segmentation import SegmentationConfig
+
+        search_fn = self._search_fn
+        if search_fn is None:
+            from fightcade_analysis.sequence_search import search_similar_sequences
+
+            search_fn = search_similar_sequences
         cfg = SegmentationConfig(penalty=18.0, min_size=45, jump=5, lead_frames=8)
-        raw = self._search_fn(
+        raw = search_fn(
             target_pq,
             perspective=persp,
             start_gf=s_gf,
@@ -804,6 +811,9 @@ class InsightJobRunner:
         files = sorted(pq_dir.glob("*.parquet")) if pq_dir.is_dir() else []
         if not files:
             raise FileNotFoundError("No top-rank corpus Parquets found in data/parquet/")
+        from fightcade_analysis.index import HierarchicalContextIndex, load_or_build_corpus
+        from fightcade_analysis.segmentation import SegmentationConfig
+
         cfg = SegmentationConfig(penalty=18.0, min_size=45, jump=5, lead_frames=8)
         corpus, _ = load_or_build_corpus(files, config=cfg, both_perspectives=True, cache_dir=self.data_dir / "index")
         index = HierarchicalContextIndex(corpus.meta, corpus.vectors)

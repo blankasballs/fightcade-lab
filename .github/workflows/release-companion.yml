@@ -26,14 +26,18 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install runtime & Nuitka build dependencies
+      - name: Install runtime, test & Nuitka build dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" pillow nuitka ordered-set zstandard
+          pip install -e ".[dev]" pillow imageio-ffmpeg nuitka ordered-set zstandard
 
       - name: Run Companion unit test suite (including frozen-import isolation & safety checks)
         run: |
           pytest tests/ --ignore=tests/test_coaching.py --ignore=tests/test_habit_rollup.py --ignore=tests/test_hybrid_habits.py --ignore=tests/test_index.py --ignore=tests/test_insights_pro_search.py --ignore=tests/test_segmentation.py --ignore=tests/test_sequence_search.py --ignore=tests/test_audio_and_benchmarks.py --ignore=tests/test_features.py -v
+
+      - name: Uninstall test-only packages before Nuitka build
+        run: |
+          pip uninstall -y imageio-ffmpeg pillow
 
       - name: Build standalone Windows Companion (Nuitka, zero bundled FBNeo/FFmpeg)
         run: |
